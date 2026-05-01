@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+make fmt
+
+if ! git diff --quiet; then
+    echo "pre-commit: formatter modified files. review changes, stage them, and commit again."
+    exit 1
+fi

@@ -1,16 +1,7 @@
 from xdsl.dialects.builtin import IntegerType, ModuleOp
 from xdsl.ir import Block, Region
 
-from veripy.dialects.py import (
-    BinOp,
-    ConstantOp,
-    FuncOp,
-    IfOp,
-    NegOp,
-    ParamRefOp,
-    Py,
-    ReturnOp,
-)
+from veripy.dialects.py import BinOp, ConstantOp, FuncOp, IfOp, NegOp, ParamRefOp, Py, ReturnOp
 
 i64 = IntegerType(64)
 i1 = IntegerType(1)
@@ -134,7 +125,7 @@ def test_abs_ir_builds_and_prints():
         body=body,
     )
 
-    module = ModuleOp([func])
+    _module = ModuleOp([func])
 
     body_ops = list(body.block.ops)
     assert len(body_ops) == 4

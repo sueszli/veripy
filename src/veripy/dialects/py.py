@@ -2,23 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from xdsl.dialects.builtin import (
-    ArrayAttr,
-    FunctionType,
-    IntegerAttr,
-    IntegerType,
-    StringAttr,
-)
+from xdsl.dialects.builtin import ArrayAttr, FunctionType, IntegerAttr, IntegerType, StringAttr
 from xdsl.ir import Dialect, Operation, Region, SSAValue
-from xdsl.irdl import (
-    IRDLOperation,
-    irdl_op_definition,
-    operand_def,
-    prop_def,
-    region_def,
-    result_def,
-    traits_def,
-)
+from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 
 
