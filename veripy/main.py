@@ -5,7 +5,7 @@ from pathlib import Path
 import click
 from xdsl.dialects.builtin import ArrayAttr, FunctionType, IntegerAttr, IntegerType, ModuleOp, StringAttr
 from xdsl.ir import Block, Dialect, Operation, Region, SSAValue
-from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def
+from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def, var_operand_def
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
 from xdsl.printer import Printer
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
@@ -99,7 +99,64 @@ class ReturnOp(IRDLOperation):
         super().__init__(operands=[value])
 
 
-Py = Dialect("py", [FuncOp, ConstantOp, ParamRefOp, BinOp, NegOp, IfOp, ReturnOp], [])
+# TODO(xdsl-upstream): verif dialect with first-class assert/invariant/decreases/requires/ensures ops
+@irdl_op_definition
+class AssertOp(IRDLOperation):
+    name = "py.assert"
+    cond = operand_def()
+
+    def __init__(self, cond: SSAValue | Operation):
+        super().__init__(operands=[cond])
+
+
+@irdl_op_definition
+class CallOp(IRDLOperation):
+    name = "py.call"
+    callee = prop_def(StringAttr)
+    arguments = var_operand_def()
+    result = result_def()
+    traits = traits_def(Pure())
+
+    def __init__(self, callee: str, arguments: Sequence[SSAValue | Operation], result_type: IntegerType):
+        super().__init__(operands=[arguments], properties={"callee": StringAttr(callee)}, result_types=[result_type])
+
+
+@irdl_op_definition
+class AssignOp(IRDLOperation):
+    name = "py.assign"
+    var_name = prop_def(StringAttr)
+    is_decl = prop_def(IntegerAttr)
+    value = operand_def()
+
+    def __init__(self, var_name: str, value: SSAValue | Operation, is_decl: bool):
+        super().__init__(operands=[value], properties={"var_name": StringAttr(var_name), "is_decl": IntegerAttr(int(is_decl), IntegerType(1))})
+
+
+@irdl_op_definition
+class VarRefOp(IRDLOperation):
+    name = "py.var_ref"
+    var_name = prop_def(StringAttr)
+    result = result_def()
+    traits = traits_def(Pure())
+
+    def __init__(self, var_name: str, result_type: IntegerType):
+        super().__init__(properties={"var_name": StringAttr(var_name)}, result_types=[result_type])
+
+
+# TODO(xdsl-upstream): scf.SimpleWhileOp with imperative semantics (current scf.WhileOp requires SSA loop-carried values)
+@irdl_op_definition
+class WhileOp(IRDLOperation):
+    name = "py.while"
+    cond_text = prop_def(StringAttr)
+    invariants = prop_def(ArrayAttr[StringAttr])
+    decreases = prop_def(ArrayAttr[StringAttr])
+    body = region_def()
+
+    def __init__(self, cond_text: str, body: Region, *, invariants: Sequence[str] | None = None, decreases: Sequence[str] | None = None):
+        super().__init__(properties={"cond_text": StringAttr(cond_text), "invariants": ArrayAttr([StringAttr(s) for s in (invariants or [])]), "decreases": ArrayAttr([StringAttr(s) for s in (decreases or [])])}, regions=[body])
+
+
+Py = Dialect("py", [FuncOp, ConstantOp, ParamRefOp, BinOp, NegOp, IfOp, ReturnOp, AssertOp, CallOp, AssignOp, VarRefOp, WhileOp], [])
 
 
 #
@@ -235,7 +292,7 @@ Verif = Dialect("verif", [VerifFuncOp, VerifConstantOp, VerifParamRefOp, VerifNe
 i64 = IntegerType(64)
 i1 = IntegerType(1)
 
-ANNOTATION_RE = re.compile(r"^\s*#@\s+(requires|ensures)\s+(.*?)\s*$")
+ANNOTATION_RE = re.compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
 
 AST_OP: dict[type, tuple[str, IntegerType]] = {
     ast.Eq: ("eq", i1), ast.NotEq: ("ne", i1), ast.Lt: ("lt", i1),
@@ -244,6 +301,14 @@ AST_OP: dict[type, tuple[str, IntegerType]] = {
     ast.FloorDiv: ("floordiv", i64), ast.Mod: ("mod", i64),
     ast.And: ("and", i1), ast.Or: ("or", i1),
 }
+
+
+def _resolve_type(ann: ast.expr | None) -> IntegerType:
+    match ann:
+        case ast.Name(id="bool"):
+            return i1
+        case _:
+            return i64
 
 
 def _extract_annotations(source: str, func_node: ast.FunctionDef) -> tuple[list[str], list[str]]:
@@ -258,9 +323,26 @@ def _extract_annotations(source: str, func_node: ast.FunctionDef) -> tuple[list[
         keyword, expr = m.group(1), m.group(2)
         if keyword == "requires":
             requires.append(expr)
-        else:
+        elif keyword == "ensures":
             ensures.append(expr)
     return requires, ensures
+
+
+def _extract_loop_annotations(source: str, node: ast.While) -> tuple[list[str], list[str]]:
+    lines = source.splitlines()
+    invariants: list[str] = []
+    decreases_list: list[str] = []
+    for lineno in range(node.lineno, node.end_lineno or node.lineno + 1):
+        line = lines[lineno - 1] if lineno <= len(lines) else ""
+        m = ANNOTATION_RE.match(line)
+        if not m:
+            continue
+        keyword, expr = m.group(1), m.group(2)
+        if keyword == "invariant":
+            invariants.append(expr)
+        elif keyword == "decreases":
+            decreases_list.append(expr)
+    return invariants, decreases_list
 
 
 def _emit(ops: list, op: Operation) -> Operation:
@@ -268,46 +350,68 @@ def _emit(ops: list, op: Operation) -> Operation:
     return op
 
 
-def _lower_block(stmts: Iterable[ast.stmt]) -> list[Operation]:
+def _lower_block(stmts: Iterable[ast.stmt], scope: dict[str, IntegerType], locals_: set[str], source: str = "") -> list[Operation]:
     ops: list[Operation] = []
     for s in stmts:
-        _lower_stmt(s, ops)
+        _lower_stmt(s, ops, scope, locals_, source)
     return ops
 
 
-def _lower_expr(node: ast.expr, ops: list) -> Operation:
+def _lower_expr(node: ast.expr, ops: list, scope: dict[str, IntegerType], locals_: set[str]) -> Operation:
     match node:
+        case ast.Constant(value=bool() as v):
+            return _emit(ops, ConstantOp(1 if v else 0, i1))
         case ast.Constant(value=int() as v):
             return _emit(ops, ConstantOp(v, i64))
         case ast.Name(id=name):
-            return _emit(ops, ParamRefOp(name, i64))
+            if name in locals_:
+                return _emit(ops, VarRefOp(name, scope.get(name, i64)))
+            return _emit(ops, ParamRefOp(name, scope.get(name, i64)))
         case ast.UnaryOp(op=ast.USub(), operand=operand):
-            return _emit(ops, NegOp(_lower_expr(operand, ops), i64))
+            return _emit(ops, NegOp(_lower_expr(operand, ops, scope, locals_), i64))
         case ast.Compare(left=left, ops=[cmp_op], comparators=[comp]):
-            lhs, rhs = _lower_expr(left, ops), _lower_expr(comp, ops)
+            lhs, rhs = _lower_expr(left, ops, scope, locals_), _lower_expr(comp, ops, scope, locals_)
             s, ty = AST_OP[type(cmp_op)]
             return _emit(ops, BinOp(s, lhs, rhs, ty))
         case ast.BinOp(left=left, op=bin_op, right=right):
-            lhs, rhs = _lower_expr(left, ops), _lower_expr(right, ops)
+            lhs, rhs = _lower_expr(left, ops, scope, locals_), _lower_expr(right, ops, scope, locals_)
             s, ty = AST_OP[type(bin_op)]
             return _emit(ops, BinOp(s, lhs, rhs, ty))
         case ast.BoolOp(op=bool_op, values=[v1, v2, *_]):
-            lhs, rhs = _lower_expr(v1, ops), _lower_expr(v2, ops)
+            lhs, rhs = _lower_expr(v1, ops, scope, locals_), _lower_expr(v2, ops, scope, locals_)
             s, ty = AST_OP[type(bool_op)]
             return _emit(ops, BinOp(s, lhs, rhs, ty))
+        case ast.Call(func=ast.Name(id=callee), args=args):
+            lowered_args = [_lower_expr(a, ops, scope, locals_) for a in args]
+            return _emit(ops, CallOp(callee, lowered_args, i64))
         case _:
             raise NotImplementedError(f"unsupported expression: {ast.dump(node)}")
 
 
-def _lower_stmt(stmt: ast.stmt, ops: list) -> None:
+def _lower_stmt(stmt: ast.stmt, ops: list, scope: dict[str, IntegerType], locals_: set[str], source: str = "") -> None:
     match stmt:
+        case ast.Assign(targets=[ast.Name(id=name)], value=value):
+            val = _lower_expr(value, ops, scope, locals_)
+            is_decl = name not in locals_ and name not in scope
+            _emit(ops, AssignOp(name, val, is_decl))
+            scope[name] = i64
+            locals_.add(name)
         case ast.Return(value=value) if value is not None:
-            _emit(ops, ReturnOp(_lower_expr(value, ops)))
+            _emit(ops, ReturnOp(_lower_expr(value, ops, scope, locals_)))
         case ast.If(test=test, body=body, orelse=orelse):
-            cond = _lower_expr(test, ops)
-            then_ops = _lower_block(body)
-            else_ops = _lower_block(orelse)
+            cond = _lower_expr(test, ops, scope, locals_)
+            then_ops = _lower_block(body, scope, locals_, source)
+            else_ops = _lower_block(orelse, scope, locals_, source)
             ops.append(IfOp(cond, Region([Block(then_ops)]), Region([Block(else_ops)]) if else_ops else None))
+        case ast.Expr(value=ast.Call(func=ast.Name(id=callee), args=args)):
+            lowered_args = [_lower_expr(a, ops, scope, locals_) for a in args]
+            _emit(ops, CallOp(callee, lowered_args, i64))
+        case ast.Assert(test=test):
+            _emit(ops, AssertOp(_lower_expr(test, ops, scope, locals_)))
+        case ast.While(test=test, body=body):
+            invariants, decreases_list = _extract_loop_annotations(source, stmt)
+            body_ops = _lower_block(body, scope, locals_, source)
+            ops.append(WhileOp(ast.unparse(test), Region([Block(body_ops)]), invariants=invariants, decreases=decreases_list))
         case _:
             raise NotImplementedError(f"unsupported statement: {ast.dump(stmt)}")
 
@@ -315,10 +419,11 @@ def _lower_stmt(stmt: ast.stmt, ops: list) -> None:
 def _lower_function(source: str, func_node: ast.FunctionDef) -> FuncOp:
     requires, ensures = _extract_annotations(source, func_node)
     param_names = [arg.arg for arg in func_node.args.args]
-    param_types = [i64] * len(param_names)
-    return_type = [i64] if func_node.returns else []
+    param_types = [_resolve_type(arg.annotation) for arg in func_node.args.args]
+    return_type = [_resolve_type(func_node.returns)] if func_node.returns else []
+    scope = dict(zip(param_names, param_types))
     body_stmts = [s for s in func_node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
-    return FuncOp(func_node.name, param_names, (param_types, return_type), requires=requires, ensures=ensures, body=Region([Block(_lower_block(body_stmts))]))
+    return FuncOp(func_node.name, param_names, (param_types, return_type), requires=requires, ensures=ensures, body=Region([Block(_lower_block(body_stmts, scope, set(), source))]))
 
 
 def ingest(source: str) -> ModuleOp:
@@ -393,7 +498,7 @@ def resolve(module: ModuleOp) -> ModuleOp:
 
 
 def _rewrite_spec(clause: str) -> str:
-    return re.sub(r"\bor\b", "||", re.sub(r"\bresult\b", "r", clause))
+    return re.sub(r"\band\b", "&&", re.sub(r"\bor\b", "||", re.sub(r"\bresult\b", "r", clause)))
 
 
 def print_dafny(module: ModuleOp) -> str:
@@ -429,11 +534,24 @@ def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str)
             continue
         match op:
             case VerifConstantOp():
-                exprs[op.result] = str(op.value.value.data)
+                if op.value.type.width.data == 1:
+                    exprs[op.result] = "true" if op.value.value.data else "false"
+                else:
+                    exprs[op.result] = str(op.value.value.data)
             case VerifParamRefOp():
                 exprs[op.result] = op.param_name.data
+            case VarRefOp():
+                exprs[op.result] = op.var_name.data
             case VerifNegOp():
                 exprs[op.result] = f"-{exprs[op.operand]}"
+            case CallOp():
+                args = ", ".join(exprs[a] for a in op.arguments)
+                exprs[op.result] = f"{op.callee.data}({args})"
+            case AssignOp():
+                decl = "var " if op.is_decl.value.data else ""
+                lines.append(f"{indent}{decl}{op.var_name.data} := {exprs[op.value]};")
+            case AssertOp():
+                lines.append(f"{indent}assert {exprs[op.cond]};")
             case VerifReturnOp():
                 lines.append(f"{indent}r := {exprs[op.value]};")
                 lines.append(f"{indent}return;")
@@ -443,6 +561,90 @@ def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str)
                 lines.append(f"{indent}}}")
                 if len(op.else_region.blocks) > 0:
                     lines.extend(_emit_ops(op.else_region.block.ops, exprs, indent))
+            case WhileOp():
+                lines.append(f"{indent}while {_rewrite_spec(op.cond_text.data)}")
+                for inv in op.invariants:
+                    lines.append(f"{indent}  invariant {_rewrite_spec(inv.data)}")
+                for dec in op.decreases:
+                    lines.append(f"{indent}  decreases {_rewrite_spec(dec.data)}")
+                lines.append(f"{indent}{{")
+                lines.extend(_emit_ops(op.body.block.ops, exprs, indent + "  "))
+                lines.append(f"{indent}}}")
+    return lines
+
+
+#
+# lean printer
+# TODO(xdsl-upstream): Lean 4 printer/emitter infrastructure
+#
+
+OP_SYMBOLS = {"ge": ">=", "le": "<=", "gt": ">", "lt": "<", "eq": "==", "ne": "!=", "add": "+", "sub": "-", "mul": "*", "and": "&&", "or": "||"}
+
+
+def print_lean(module: ModuleOp) -> str:
+    return "\n\n".join(_print_lean_func(op) for op in module.body.block.ops if isinstance(op, VerifFuncOp))
+
+
+def _lean_type(ty: IntegerType) -> str:
+    return "Bool" if ty.width.data == 1 else "Int"
+
+
+def _print_lean_func(func: VerifFuncOp) -> str:
+    param_names = [attr.data for attr in func.param_names]
+    param_types = list(func.function_type.inputs)
+    params = " ".join(f"({name} : {_lean_type(ty)})" for name, ty in zip(param_names, param_types))
+    ret_type = _lean_type(list(func.function_type.outputs)[0])
+    lines = [f"def {func.sym_name.data} {params} : {ret_type} :="]
+    for clause in func.requires:
+        lines.append(f"  -- requires {clause.data}")
+    for clause in func.ensures:
+        lines.append(f"  -- ensures {clause.data}")
+    exprs: dict[SSAValue, str] = {}
+    lines.extend(_emit_lean_ops(func.body.block.ops, exprs, "  "))
+    return "\n".join(lines)
+
+
+def _emit_lean_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str) -> list[str]:
+    lines: list[str] = []
+    for op in ops:
+        if type(op) in VERIF_BIN_SYMBOL:
+            exprs[op.result] = f"{exprs[op.lhs]} {VERIF_BIN_SYMBOL[type(op)]} {exprs[op.rhs]}"
+            continue
+        match op:
+            case VerifConstantOp():
+                if op.value.type.width.data == 1:
+                    exprs[op.result] = "true" if op.value.value.data else "false"
+                else:
+                    exprs[op.result] = str(op.value.value.data)
+            case VerifParamRefOp():
+                exprs[op.result] = op.param_name.data
+            case VarRefOp():
+                exprs[op.result] = op.var_name.data
+            case VerifNegOp():
+                exprs[op.result] = f"-{exprs[op.operand]}"
+            case CallOp():
+                args = " ".join(exprs[a] for a in op.arguments)
+                exprs[op.result] = f"{op.callee.data} {args}" if args else op.callee.data
+            case AssignOp():
+                decl = "let mut " if op.is_decl.value.data else ""
+                lines.append(f"{indent}{decl}{op.var_name.data} := {exprs[op.value]}")
+            case AssertOp():
+                lines.append(f"{indent}assert {exprs[op.cond]}")
+            case VerifReturnOp():
+                lines.append(f"{indent}{exprs[op.value]}")
+            case VerifIfOp():
+                lines.append(f"{indent}if {exprs[op.cond]} then")
+                lines.extend(_emit_lean_ops(op.then_region.block.ops, exprs, indent + "  "))
+                if len(op.else_region.blocks) > 0 and list(op.else_region.block.ops):
+                    lines.append(f"{indent}else")
+                    lines.extend(_emit_lean_ops(op.else_region.block.ops, exprs, indent))
+            case WhileOp():
+                lines.append(f"{indent}while {op.cond_text.data} do")
+                for inv in op.invariants:
+                    lines.append(f"{indent}  invariant {inv.data}")
+                for dec in op.decreases:
+                    lines.append(f"{indent}  decreasing {dec.data}")
+                lines.extend(_emit_lean_ops(op.body.block.ops, exprs, indent + "  "))
     return lines
 
 
@@ -451,12 +653,29 @@ def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str)
 #
 
 
+def _llm_add_proof(dfy_source: str, error: str) -> str:
+    try:
+        import anthropic
+    except ImportError:
+        click.echo("anthropic package required for --regen (pip install anthropic)", err=True)
+        sys.exit(1)
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{"role": "user", "content": f"This Dafny program fails verification:\n\n```dafny\n{dfy_source}\n```\n\nError:\n```\n{error}\n```\n\nFix the program by adding assertions, lemma calls, or strengthening invariants. Return ONLY the complete fixed Dafny source, no explanation."}],
+    )
+    return response.content[0].text
+
+
 @click.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option("--ir-py", "fmt", flag_value="ir-py", help="Print py-dialect IR (pre-resolve)")
 @click.option("--ir", "fmt", flag_value="ir", help="Print verif-dialect IR (post-resolve)")
 @click.option("--dfy", "fmt", flag_value="dfy", help="Print Dafny source")
-def cli(file: Path, fmt: str | None):
+@click.option("--lean", "fmt", flag_value="lean", help="Print Lean 4 source")
+@click.option("--regen", is_flag=True, help="On verify failure, use LLM to add proof annotations and retry")
+def cli(file: Path, fmt: str | None, regen: bool):
     source = Path(file).read_text()
     module = ingest(source)
     if fmt == "ir-py":
@@ -466,11 +685,33 @@ def cli(file: Path, fmt: str | None):
     if fmt == "ir":
         Printer().print(module)
         return
+    if fmt == "lean":
+        click.echo(print_lean(module))
+        return
     dfy = print_dafny(module)
     if fmt == "dfy":
         click.echo(dfy)
         return
     dfy_path = Path(file).with_suffix(".dfy")
     dfy_path.write_text(dfy + "\n")
-    result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name])
+    result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name], capture_output=True, text=True)
+    if result.returncode == 0 or not regen:
+        if result.stdout:
+            click.echo(result.stdout)
+        if result.stderr:
+            click.echo(result.stderr, err=True)
+        sys.exit(result.returncode)
+    for attempt in range(3):
+        click.echo(f"Verification failed, regen attempt {attempt + 1}/3...", err=True)
+        error = result.stdout + result.stderr
+        dfy = _llm_add_proof(dfy, error)
+        dfy_path.write_text(dfy + "\n")
+        result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name], capture_output=True, text=True)
+        if result.returncode == 0:
+            click.echo(f"Verification succeeded after {attempt + 1} regen attempt(s).", err=True)
+            break
+    if result.stdout:
+        click.echo(result.stdout)
+    if result.stderr:
+        click.echo(result.stderr, err=True)
     sys.exit(result.returncode)
