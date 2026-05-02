@@ -3,7 +3,6 @@ VeriPy
 
 An xDSL-based vericoding toolchain for Python. Python source with #@ requires/ensures/invariant/decreases annotations gets lowered through typed xDSL dialects to Dafny or Lean 4. The verifier discharges what it can; an LLM closes the rest. The vericoding pattern is from LemmaScript (https://github.com/midspiral/LemmaScript, which targets TypeScript); VeriPy applies it to Python and replaces the ad-hoc TypeScript IR with a typed multi-dialect IR so that adding a backend is a printer, not a rewrite of the pipeline.
 
-
 Pipeline
 --------
 

@@ -10,5 +10,5 @@ fmt:
 	uvx ruff check --fix --exclude .venv,examples,tests/filecheck .
 
 test: fmt
-	uv run pytest tests/test_cli.py
+	uv run pytest tests/
 	uv run lit tests/filecheck/
