@@ -1,29 +1,11 @@
-import ast
-import re
-import subprocess
-import sys
+import ast, re, subprocess, sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import click
-from xdsl.dialects.builtin import (
-    ArrayAttr,
-    FunctionType,
-    IntegerAttr,
-    IntegerType,
-    ModuleOp,
-    StringAttr,
-)
+from xdsl.dialects.builtin import ArrayAttr, FunctionType, IntegerAttr, IntegerType, ModuleOp, StringAttr
 from xdsl.ir import Block, Dialect, Operation, Region, SSAValue
-from xdsl.irdl import (
-    IRDLOperation,
-    irdl_op_definition,
-    operand_def,
-    prop_def,
-    region_def,
-    result_def,
-    traits_def,
-)
+from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def
 from xdsl.printer import Printer
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 
