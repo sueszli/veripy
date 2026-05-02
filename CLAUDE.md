@@ -66,6 +66,7 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 
 - minimize indentation: guard first programming, early returns, happy path first
 - maximize for code locality: a little duplication is okay. inline small functions (<5 LoC)
+- maximize test coverage, without adding noise
 
 - avoid OOP primitives like classes and inheritance where possible
 - use match statements over multiple `isinstance` branches
