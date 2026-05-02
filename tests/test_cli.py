@@ -1,7 +1,4 @@
 import subprocess
-from pathlib import Path
-
-EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 
 def test_cli_writes_dfy_file(tmp_path):
