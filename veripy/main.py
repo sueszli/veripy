@@ -29,7 +29,9 @@ from xdsl.irdl import (
 from xdsl.printer import Printer
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 
-# ── dialect ──────────────────────────────────────────────────────────────────
+#
+# dialect
+#
 
 
 @irdl_op_definition
@@ -119,7 +121,9 @@ class ReturnOp(IRDLOperation):
 Py = Dialect("py", [FuncOp, ConstantOp, ParamRefOp, BinOp, NegOp, IfOp, ReturnOp], [])
 
 
-# ── ingestor ─────────────────────────────────────────────────────────────────
+#
+# ingestor
+#
 
 i64 = IntegerType(64)
 i1 = IntegerType(1)
@@ -265,7 +269,9 @@ def ingest(source: str) -> ModuleOp:
     return ModuleOp(ops)
 
 
-# ── printer ──────────────────────────────────────────────────────────────────
+#
+# printer
+#
 
 OP_SYMBOLS = {"ge": ">=", "le": "<=", "gt": ">", "lt": "<", "eq": "==", "ne": "!=", "add": "+", "sub": "-", "mul": "*"}
 
@@ -333,7 +339,9 @@ def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str)
     return lines
 
 
-# ── cli ──────────────────────────────────────────────────────────────────────
+#
+# cli
+#
 
 
 @click.command()
