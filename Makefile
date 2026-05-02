@@ -1,13 +1,14 @@
-.PHONY: venv fmt precommit
+.PHONY: venv fmt test
 
 venv:
 	uv sync
 
 fmt:
-	uvx isort .
-	uvx autoflake --remove-all-unused-imports --recursive --in-place .
-	uvx black --line-length 5000 --target-version py312 .
-	uvx ruff check --fix .
+	uvx isort --profile black --skip .venv --skip examples --skip tests/filecheck .
+	uvx autoflake --remove-all-unused-imports --recursive --in-place --exclude .venv,examples,tests/filecheck .
+	uvx black --line-length 5000 --exclude '\.venv|examples|tests/filecheck' .
+	uvx ruff check --fix --exclude .venv,examples,tests/filecheck .
 
-precommit: fmt
-	uv run pytest
+test: fmt
+	uv run pytest tests/test_cli.py
+	uv run lit tests/filecheck/

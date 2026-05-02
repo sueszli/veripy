@@ -2,14 +2,13 @@
 name = "veripy"
 version = "0.0.1"
 requires-python = ">=3.12"
-dependencies = [
-    "xdsl==0.63.0",
-]
+dependencies = ["xdsl==0.63.0", "click"]
 
 [tool.uv]
-dev-dependencies = [
-    "pytest==9.0.3",
-]
+dev-dependencies = ["pytest==9.0.3", "lit", "filecheck"]
+
+[project.scripts]
+veripy = "veripy.main:cli"
 
 [build-system]
 requires = ["setuptools"]
