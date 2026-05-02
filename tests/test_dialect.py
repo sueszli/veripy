@@ -1,7 +1,7 @@
 from xdsl.dialects.builtin import IntegerType, ModuleOp
 from xdsl.ir import Block, Region
 
-from veripy.dialects.py import BinOp, ConstantOp, FuncOp, IfOp, NegOp, ParamRefOp, Py, ReturnOp
+from veripy.py import BinOp, ConstantOp, FuncOp, IfOp, NegOp, ParamRefOp, Py, ReturnOp
 
 i64 = IntegerType(64)
 i1 = IntegerType(1)
@@ -20,21 +20,12 @@ def test_funcop_stores_function_type():
 
 def test_funcop_stores_param_names():
     func = FuncOp("f", ["x", "y"], ([i64, i64], [i64]))
-    names = [attr.data for attr in func.param_names]
-    assert names == ["x", "y"]
+    assert [attr.data for attr in func.param_names] == ["x", "y"]
 
 
 def test_funcop_stores_ensures():
-    func = FuncOp(
-        "abs",
-        ["x"],
-        ([i64], [i64]),
-        ensures=["result >= 0", "result == x or result == -x"],
-    )
-    assert [a.data for a in func.ensures] == [
-        "result >= 0",
-        "result == x or result == -x",
-    ]
+    func = FuncOp("abs", ["x"], ([i64], [i64]), ensures=["result >= 0", "result == x or result == -x"])
+    assert [a.data for a in func.ensures] == ["result >= 0", "result == x or result == -x"]
 
 
 def test_funcop_stores_requires():
@@ -61,15 +52,12 @@ def test_paramrefop_stores_param_name():
 
 
 def test_binop_preserves_operator_kind():
-    lhs = ConstantOp(1, i64)
-    rhs = ConstantOp(2, i64)
-    b = BinOp("ge", lhs, rhs, i1)
-    assert b.op_kind.data == "ge"
+    lhs, rhs = ConstantOp(1, i64), ConstantOp(2, i64)
+    assert BinOp("ge", lhs, rhs, i1).op_kind.data == "ge"
 
 
 def test_binop_connects_operands():
-    lhs = ConstantOp(1, i64)
-    rhs = ConstantOp(2, i64)
+    lhs, rhs = ConstantOp(1, i64), ConstantOp(2, i64)
     b = BinOp("ge", lhs, rhs, i1)
     assert b.lhs == lhs.result
     assert b.rhs == rhs.result
@@ -106,27 +94,13 @@ def test_abs_ir_builds_and_prints():
     x_ref = ParamRefOp("x", i64)
     zero = ConstantOp(0, i64)
     cond = BinOp("ge", x_ref, zero, i1)
-
-    then_ret = ReturnOp(x_ref)
-    then_block = Block([then_ret])
-
+    then_block = Block([ReturnOp(x_ref)])
     neg_x = NegOp(x_ref, i64)
-    else_ret = ReturnOp(neg_x)
-    else_block = Block([neg_x, else_ret])
-
+    else_block = Block([neg_x, ReturnOp(neg_x)])
     if_op = IfOp(cond, Region([then_block]), Region([else_block]))
-
     body = Region([Block([x_ref, zero, cond, if_op])])
-    func = FuncOp(
-        "abs",
-        ["x"],
-        ([i64], [i64]),
-        ensures=["result >= 0", "result == x or result == -x"],
-        body=body,
-    )
-
-    _module = ModuleOp([func])
-
+    func = FuncOp("abs", ["x"], ([i64], [i64]), ensures=["result >= 0", "result == x or result == -x"], body=body)
+    ModuleOp([func])
     body_ops = list(body.block.ops)
     assert len(body_ops) == 4
     assert isinstance(body_ops[0], ParamRefOp)
