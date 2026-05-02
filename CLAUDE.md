@@ -1,4 +1,4 @@
-# CLAUDE.md
+# Thinking Guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -60,6 +60,12 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
----
+These guidelines are working if: fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+# Syntax Guidelines
+
+- minimize indentation: guard first programming, early returns, happy path first
+- maximize for code locality: a little duplication is okay. inline small functions (<5 LoC)
+
+- avoid OOP primitives like classes and inheritance where possible
+- use match statements over multiple `isinstance` branches
