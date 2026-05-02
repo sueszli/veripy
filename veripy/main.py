@@ -149,46 +149,40 @@ def _lower_block(stmts: Iterable[ast.stmt]) -> list[Operation]:
 
 
 def _lower_expr(node: ast.expr, ops: list) -> Operation:
-    if isinstance(node, ast.Constant) and isinstance(node.value, int):
-        return _emit(ops, ConstantOp(node.value, i64))
-
-    if isinstance(node, ast.Name):
-        return _emit(ops, ParamRefOp(node.id, i64))
-
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        return _emit(ops, NegOp(_lower_expr(node.operand, ops), i64))
-
-    if isinstance(node, ast.Compare) and len(node.ops) == 1:
-        lhs, rhs = _lower_expr(node.left, ops), _lower_expr(node.comparators[0], ops)
-        s, ty = AST_OP[type(node.ops[0])]
-        return _emit(ops, BinOp(s, lhs, rhs, ty))
-
-    if isinstance(node, ast.BinOp):
-        lhs, rhs = _lower_expr(node.left, ops), _lower_expr(node.right, ops)
-        s, ty = AST_OP[type(node.op)]
-        return _emit(ops, BinOp(s, lhs, rhs, ty))
-
-    if isinstance(node, ast.BoolOp):
-        lhs, rhs = _lower_expr(node.values[0], ops), _lower_expr(node.values[1], ops)
-        s, ty = AST_OP[type(node.op)]
-        return _emit(ops, BinOp(s, lhs, rhs, ty))
-
-    raise NotImplementedError(f"unsupported expression: {ast.dump(node)}")
+    match node:
+        case ast.Constant(value=int() as v):
+            return _emit(ops, ConstantOp(v, i64))
+        case ast.Name(id=name):
+            return _emit(ops, ParamRefOp(name, i64))
+        case ast.UnaryOp(op=ast.USub(), operand=operand):
+            return _emit(ops, NegOp(_lower_expr(operand, ops), i64))
+        case ast.Compare(left=left, ops=[cmp_op], comparators=[comp]):
+            lhs, rhs = _lower_expr(left, ops), _lower_expr(comp, ops)
+            s, ty = AST_OP[type(cmp_op)]
+            return _emit(ops, BinOp(s, lhs, rhs, ty))
+        case ast.BinOp(left=left, op=bin_op, right=right):
+            lhs, rhs = _lower_expr(left, ops), _lower_expr(right, ops)
+            s, ty = AST_OP[type(bin_op)]
+            return _emit(ops, BinOp(s, lhs, rhs, ty))
+        case ast.BoolOp(op=bool_op, values=[v1, v2, *_]):
+            lhs, rhs = _lower_expr(v1, ops), _lower_expr(v2, ops)
+            s, ty = AST_OP[type(bool_op)]
+            return _emit(ops, BinOp(s, lhs, rhs, ty))
+        case _:
+            raise NotImplementedError(f"unsupported expression: {ast.dump(node)}")
 
 
 def _lower_stmt(stmt: ast.stmt, ops: list) -> None:
-    if isinstance(stmt, ast.Return) and stmt.value is not None:
-        _emit(ops, ReturnOp(_lower_expr(stmt.value, ops)))
-        return
-
-    if isinstance(stmt, ast.If):
-        cond = _lower_expr(stmt.test, ops)
-        then_ops = _lower_block(stmt.body)
-        else_ops = _lower_block(stmt.orelse)
-        ops.append(IfOp(cond, Region([Block(then_ops)]), Region([Block(else_ops)]) if else_ops else None))
-        return
-
-    raise NotImplementedError(f"unsupported statement: {ast.dump(stmt)}")
+    match stmt:
+        case ast.Return(value=value) if value is not None:
+            _emit(ops, ReturnOp(_lower_expr(value, ops)))
+        case ast.If(test=test, body=body, orelse=orelse):
+            cond = _lower_expr(test, ops)
+            then_ops = _lower_block(body)
+            else_ops = _lower_block(orelse)
+            ops.append(IfOp(cond, Region([Block(then_ops)]), Region([Block(else_ops)]) if else_ops else None))
+        case _:
+            raise NotImplementedError(f"unsupported statement: {ast.dump(stmt)}")
 
 
 def _lower_function(source: str, func_node: ast.FunctionDef) -> FuncOp:
@@ -248,23 +242,24 @@ def _print_func(func: FuncOp) -> str:
 def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str) -> list[str]:
     lines: list[str] = []
     for op in ops:
-        if isinstance(op, ConstantOp):
-            exprs[op.result] = str(op.value.value.data)
-        elif isinstance(op, ParamRefOp):
-            exprs[op.result] = op.param_name.data
-        elif isinstance(op, BinOp):
-            exprs[op.result] = f"{exprs[op.lhs]} {OP_SYMBOLS[op.op_kind.data]} {exprs[op.rhs]}"
-        elif isinstance(op, NegOp):
-            exprs[op.result] = f"-{exprs[op.operand]}"
-        elif isinstance(op, ReturnOp):
-            lines.append(f"{indent}r := {exprs[op.value]};")
-            lines.append(f"{indent}return;")
-        elif isinstance(op, IfOp):
-            lines.append(f"{indent}if {exprs[op.cond]} {{")
-            lines.extend(_emit_ops(op.then_region.block.ops, exprs, indent + "  "))
-            lines.append(f"{indent}}}")
-            if len(op.else_region.blocks) > 0:
-                lines.extend(_emit_ops(op.else_region.block.ops, exprs, indent))
+        match op:
+            case ConstantOp():
+                exprs[op.result] = str(op.value.value.data)
+            case ParamRefOp():
+                exprs[op.result] = op.param_name.data
+            case BinOp():
+                exprs[op.result] = f"{exprs[op.lhs]} {OP_SYMBOLS[op.op_kind.data]} {exprs[op.rhs]}"
+            case NegOp():
+                exprs[op.result] = f"-{exprs[op.operand]}"
+            case ReturnOp():
+                lines.append(f"{indent}r := {exprs[op.value]};")
+                lines.append(f"{indent}return;")
+            case IfOp():
+                lines.append(f"{indent}if {exprs[op.cond]} {{")
+                lines.extend(_emit_ops(op.then_region.block.ops, exprs, indent + "  "))
+                lines.append(f"{indent}}}")
+                if len(op.else_region.blocks) > 0:
+                    lines.extend(_emit_ops(op.else_region.block.ops, exprs, indent))
     return lines
 
 
