@@ -128,26 +128,12 @@ i1 = IntegerType(1)
 
 ANNOTATION_RE = re.compile(r"^\s*#@\s+(requires|ensures)\s+(.*?)\s*$")
 
-AST_CMPOP_TO_STR = {
-    ast.Eq: "eq",
-    ast.NotEq: "ne",
-    ast.Lt: "lt",
-    ast.LtE: "le",
-    ast.Gt: "gt",
-    ast.GtE: "ge",
-}
-
-AST_BINOP_TO_STR = {
-    ast.Add: "add",
-    ast.Sub: "sub",
-    ast.Mult: "mul",
-    ast.FloorDiv: "floordiv",
-    ast.Mod: "mod",
-}
-
-AST_BOOLOP_TO_STR = {
-    ast.And: "and",
-    ast.Or: "or",
+AST_OP: dict[type, tuple[str, IntegerType]] = {
+    ast.Eq: ("eq", i1), ast.NotEq: ("ne", i1), ast.Lt: ("lt", i1),
+    ast.LtE: ("le", i1), ast.Gt: ("gt", i1), ast.GtE: ("ge", i1),
+    ast.Add: ("add", i64), ast.Sub: ("sub", i64), ast.Mult: ("mul", i64),
+    ast.FloorDiv: ("floordiv", i64), ast.Mod: ("mod", i64),
+    ast.And: ("and", i1), ast.Or: ("or", i1),
 }
 
 
@@ -168,94 +154,68 @@ def _extract_annotations(source: str, func_node: ast.FunctionDef) -> tuple[list[
     return requires, ensures
 
 
-def _lower_expr(node: ast.expr) -> list:
+def _emit(ops: list, op: Operation) -> Operation:
+    ops.append(op)
+    return op
+
+
+def _lower_block(stmts: Iterable[ast.stmt]) -> list[Operation]:
+    ops: list[Operation] = []
+    for s in stmts:
+        _lower_stmt(s, ops)
+    return ops
+
+
+def _lower_expr(node: ast.expr, ops: list) -> Operation:
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
-        op = ConstantOp(node.value, i64)
-        return [op]
+        return _emit(ops, ConstantOp(node.value, i64))
 
     if isinstance(node, ast.Name):
-        op = ParamRefOp(node.id, i64)
-        return [op]
+        return _emit(ops, ParamRefOp(node.id, i64))
 
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        inner_ops = _lower_expr(node.operand)
-        neg = NegOp(inner_ops[-1], i64)
-        return inner_ops + [neg]
+        return _emit(ops, NegOp(_lower_expr(node.operand, ops), i64))
 
     if isinstance(node, ast.Compare) and len(node.ops) == 1:
-        lhs_ops = _lower_expr(node.left)
-        rhs_ops = _lower_expr(node.comparators[0])
-        op_str = AST_CMPOP_TO_STR[type(node.ops[0])]
-        binop = BinOp(op_str, lhs_ops[-1], rhs_ops[-1], i1)
-        return lhs_ops + rhs_ops + [binop]
+        lhs, rhs = _lower_expr(node.left, ops), _lower_expr(node.comparators[0], ops)
+        s, ty = AST_OP[type(node.ops[0])]
+        return _emit(ops, BinOp(s, lhs, rhs, ty))
 
     if isinstance(node, ast.BinOp):
-        lhs_ops = _lower_expr(node.left)
-        rhs_ops = _lower_expr(node.right)
-        op_str = AST_BINOP_TO_STR[type(node.op)]
-        binop = BinOp(op_str, lhs_ops[-1], rhs_ops[-1], i64)
-        return lhs_ops + rhs_ops + [binop]
+        lhs, rhs = _lower_expr(node.left, ops), _lower_expr(node.right, ops)
+        s, ty = AST_OP[type(node.op)]
+        return _emit(ops, BinOp(s, lhs, rhs, ty))
 
     if isinstance(node, ast.BoolOp):
-        lhs_ops = _lower_expr(node.values[0])
-        rhs_ops = _lower_expr(node.values[1])
-        op_str = AST_BOOLOP_TO_STR[type(node.op)]
-        binop = BinOp(op_str, lhs_ops[-1], rhs_ops[-1], i1)
-        return lhs_ops + rhs_ops + [binop]
+        lhs, rhs = _lower_expr(node.values[0], ops), _lower_expr(node.values[1], ops)
+        s, ty = AST_OP[type(node.op)]
+        return _emit(ops, BinOp(s, lhs, rhs, ty))
 
     raise NotImplementedError(f"unsupported expression: {ast.dump(node)}")
 
 
-def _lower_stmt(stmt: ast.stmt) -> list:
+def _lower_stmt(stmt: ast.stmt, ops: list) -> None:
     if isinstance(stmt, ast.Return) and stmt.value is not None:
-        expr_ops = _lower_expr(stmt.value)
-        ret = ReturnOp(expr_ops[-1])
-        return expr_ops + [ret]
+        _emit(ops, ReturnOp(_lower_expr(stmt.value, ops)))
+        return
 
     if isinstance(stmt, ast.If):
-        cond_ops = _lower_expr(stmt.test)
-
-        then_ops: list = []
-        for s in stmt.body:
-            then_ops.extend(_lower_stmt(s))
-        then_block = Block(then_ops)
-
-        else_ops: list = []
-        for s in stmt.orelse:
-            else_ops.extend(_lower_stmt(s))
-        else_region = Region([Block(else_ops)]) if else_ops else None
-
-        if_op = IfOp(cond_ops[-1], Region([then_block]), else_region)
-        return cond_ops + [if_op]
+        cond = _lower_expr(stmt.test, ops)
+        then_ops = _lower_block(stmt.body)
+        else_ops = _lower_block(stmt.orelse)
+        ops.append(IfOp(cond, Region([Block(then_ops)]), Region([Block(else_ops)]) if else_ops else None))
+        return
 
     raise NotImplementedError(f"unsupported statement: {ast.dump(stmt)}")
 
 
-def _fold_trailing_else(stmts: list[ast.stmt]) -> list[ast.stmt]:
-    if len(stmts) >= 2 and isinstance(stmts[-2], ast.If) and not stmts[-2].orelse:
-        folded_if = stmts[-2]
-        folded_if.orelse = [stmts[-1]]
-        return stmts[:-1]
-    return stmts
-
-
 def _lower_function(source: str, func_node: ast.FunctionDef) -> FuncOp:
     requires, ensures = _extract_annotations(source, func_node)
-
     param_names = [arg.arg for arg in func_node.args.args]
     param_types = [i64] * len(param_names)
     return_type = [i64] if func_node.returns else []
-
     body_stmts = [s for s in func_node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
-    body_stmts = _fold_trailing_else(body_stmts)
-
-    body_ops: list = []
-    for stmt in body_stmts:
-        body_ops.extend(_lower_stmt(stmt))
-
-    body = Region([Block(body_ops)])
-
-    return FuncOp(func_node.name, param_names, (param_types, return_type), requires=requires, ensures=ensures, body=body)
+    return FuncOp(func_node.name, param_names, (param_types, return_type), requires=requires, ensures=ensures, body=Region([Block(_lower_block(body_stmts))]))
 
 
 def ingest(source: str) -> ModuleOp:
@@ -271,40 +231,29 @@ def ingest(source: str) -> ModuleOp:
 # printer
 #
 
-OP_SYMBOLS = {"ge": ">=", "le": "<=", "gt": ">", "lt": "<", "eq": "==", "ne": "!=", "add": "+", "sub": "-", "mul": "*"}
+OP_SYMBOLS = {"ge": ">=", "le": "<=", "gt": ">", "lt": "<", "eq": "==", "ne": "!=", "add": "+", "sub": "-", "mul": "*", "and": "&&", "or": "||"}
 
 
-def rewrite_ensures(clause: str) -> str:
-    s = re.sub(r"\bresult\b", "r", clause)
-    return re.sub(r"\bor\b", "||", s)
+def _rewrite_spec(clause: str) -> str:
+    return re.sub(r"\bor\b", "||", re.sub(r"\bresult\b", "r", clause))
 
 
 def print_dafny(module: ModuleOp) -> str:
-    parts = []
-    for op in module.body.block.ops:
-        if isinstance(op, FuncOp):
-            parts.append(_print_func(op))
-    return "\n".join(parts)
-
-
-def _type_str(ty: IntegerType) -> str:
-    if ty.width.data == 1:
-        return "bool"
-    return "int"
+    return "\n".join(_print_func(op) for op in module.body.block.ops if isinstance(op, FuncOp))
 
 
 def _print_func(func: FuncOp) -> str:
     param_names = [attr.data for attr in func.param_names]
     param_types = list(func.function_type.inputs)
-    params = [f"{name}: {_type_str(ty)}" for name, ty in zip(param_names, param_types)]
+    params = [f"{name}: {'bool' if ty.width.data == 1 else 'int'}" for name, ty in zip(param_names, param_types)]
     ret_type = list(func.function_type.outputs)[0]
 
-    lines = [f"method {func.sym_name.data}({', '.join(params)}) returns (r: {_type_str(ret_type)})"]
+    lines = [f"method {func.sym_name.data}({', '.join(params)}) returns (r: {'bool' if ret_type.width.data == 1 else 'int'})"]
 
     for clause in func.requires:
-        lines.append(f"  requires {rewrite_ensures(clause.data)}")
+        lines.append(f"  requires {_rewrite_spec(clause.data)}")
     for clause in func.ensures:
-        lines.append(f"  ensures {rewrite_ensures(clause.data)}")
+        lines.append(f"  ensures {_rewrite_spec(clause.data)}")
 
     lines.append("{")
     exprs: dict[SSAValue, str] = {}
