@@ -1,4 +1,4 @@
-tests/filecheck/.lit_test_times.txt
+tests/filecheck/Output/
 
 .context/
 .claude/

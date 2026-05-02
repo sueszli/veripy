@@ -71,21 +71,21 @@ For end-to-end examples to mimic, SPEC section 6.6 contains a complete state-mac
 References
 ----------
 
-LemmaScript repo: https://github.com/midspiral/LemmaScript
-SPEC.md (full implementation spec, 1148 lines, with all translation tables): https://github.com/midspiral/LemmaScript/blob/main/SPEC.md
-DESIGN.md (rationale, why no new language, why two backends): https://github.com/midspiral/LemmaScript/blob/main/DESIGN.md
-SPEC_DAFNY.md (Dafny workflow, .dfy.gen + .dfy + three-way merge): https://github.com/midspiral/LemmaScript/blob/main/SPEC_DAFNY.md
-SPEC_LEAN.md (four-file scheme, Velvet/Loom integration): https://github.com/midspiral/LemmaScript/blob/main/SPEC_LEAN.md
-TOOLS.md (peephole and narrow rule lists): https://github.com/midspiral/LemmaScript/blob/main/TOOLS.md
-ARCHITECTURE_NARROWING.md (resolve/narrow/transform split rationale): https://github.com/midspiral/LemmaScript/blob/main/ARCHITECTURE_NARROWING.md
-Implementation source: https://github.com/midspiral/LemmaScript/tree/main/LemmaScript
-Internal examples: https://github.com/midspiral/LemmaScript/tree/main/examples
-Velvet (Lean library, Nada Amin's lemma branch): https://github.com/namin/velvet/tree/lemma
-Loom (Lean library, Nada Amin's lemma branch): https://github.com/namin/loom/tree/lemma
-Lemmafit (sibling project, agent-driven verified code generation with Dafny): https://github.com/midspiral/lemmafit
-xDSL: https://github.com/xdslproject/xdsl
-Dafny: https://github.com/dafny-lang/dafny
-Lean 4: https://github.com/leanprover/lean4
+- LemmaScript repo: https://github.com/midspiral/LemmaScript
+- SPEC.md (full implementation spec, 1148 lines, with all translation tables): https://github.com/midspiral/LemmaScript/blob/main/SPEC.md
+- DESIGN.md (rationale, why no new language, why two backends): https://github.com/midspiral/LemmaScript/blob/main/DESIGN.md
+- SPEC_DAFNY.md (Dafny workflow, .dfy.gen + .dfy + three-way merge): https://github.com/midspiral/LemmaScript/blob/main/SPEC_DAFNY.md
+- SPEC_LEAN.md (four-file scheme, Velvet/Loom integration): https://github.com/midspiral/LemmaScript/blob/main/SPEC_LEAN.md
+- TOOLS.md (peephole and narrow rule lists): https://github.com/midspiral/LemmaScript/blob/main/TOOLS.md
+- ARCHITECTURE_NARROWING.md (resolve/narrow/transform split rationale): https://github.com/midspiral/LemmaScript/blob/main/ARCHITECTURE_NARROWING.md
+- Implementation source: https://github.com/midspiral/LemmaScript/tree/main/LemmaScript
+- Internal examples: https://github.com/midspiral/LemmaScript/tree/main/examples
+- Velvet (Lean library, Nada Amin's lemma branch): https://github.com/namin/velvet/tree/lemma
+- Loom (Lean library, Nada Amin's lemma branch): https://github.com/namin/loom/tree/lemma
+- Lemmafit (sibling project, agent-driven verified code generation with Dafny): https://github.com/midspiral/lemmafit
+- xDSL: https://github.com/xdslproject/xdsl
+- Dafny: https://github.com/dafny-lang/dafny
+- Lean 4: https://github.com/leanprover/lean4
 
 
 Credit

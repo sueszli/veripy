@@ -1,0 +1,10 @@
+2.923350e-01 abs.py
+2.891610e-01 constant.py
+2.821679e-01 if_else.py
+2.788038e-01 arithmetic.py
+2.801878e-01 boolean.py
+2.899659e-01 comparisons.py
+2.748868e-01 multi_func.py
+2.522180e-01 py_ir.py
+2.888541e-01 requires.py
+2.566929e-01 verif_ir.py
