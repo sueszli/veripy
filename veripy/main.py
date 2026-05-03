@@ -1,13 +1,40 @@
-import ast, re, subprocess, sys
+import ast
+import re
+import subprocess
+import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import click
-from xdsl.dialects.builtin import ArrayAttr, FunctionType, IntegerAttr, IntegerType, ModuleOp, StringAttr
+from xdsl.dialects.builtin import (
+    ArrayAttr,
+    FunctionType,
+    IntegerAttr,
+    IntegerType,
+    ModuleOp,
+    StringAttr,
+)
+from xdsl.frontend.pyast.utils.exceptions import CodeGenerationException
+from xdsl.frontend.pyast.utils.op_inserter import OpInserter
 from xdsl.ir import Block, Dialect, Operation, Region, SSAValue
-from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def, var_operand_def
-from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
+from xdsl.irdl import (
+    IRDLOperation,
+    irdl_op_definition,
+    operand_def,
+    prop_def,
+    region_def,
+    result_def,
+    traits_def,
+    var_operand_def,
+)
+from xdsl.pattern_rewriter import (
+    GreedyRewritePatternApplier,
+    PatternRewriter,
+    PatternRewriteWalker,
+    RewritePattern,
+    op_type_rewrite_pattern,
+)
 from xdsl.printer import Printer
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 
@@ -270,17 +297,35 @@ VerifAndOp = _make_verif_binop("and")
 VerifOrOp = _make_verif_binop("or")
 
 VERIF_BIN_BY_KIND: dict[str, type[IRDLOperation]] = {
-    "add": VerifAddOp, "sub": VerifSubOp, "mul": VerifMulOp,
-    "floordiv": VerifFloorDivOp, "mod": VerifModOp,
-    "eq": VerifEqOp, "ne": VerifNeOp, "lt": VerifLtOp, "le": VerifLeOp,
-    "gt": VerifGtOp, "ge": VerifGeOp, "and": VerifAndOp, "or": VerifOrOp,
+    "add": VerifAddOp,
+    "sub": VerifSubOp,
+    "mul": VerifMulOp,
+    "floordiv": VerifFloorDivOp,
+    "mod": VerifModOp,
+    "eq": VerifEqOp,
+    "ne": VerifNeOp,
+    "lt": VerifLtOp,
+    "le": VerifLeOp,
+    "gt": VerifGtOp,
+    "ge": VerifGeOp,
+    "and": VerifAndOp,
+    "or": VerifOrOp,
 }
 
 VERIF_BIN_SYMBOL: dict[type, str] = {
-    VerifAddOp: "+", VerifSubOp: "-", VerifMulOp: "*",
-    VerifFloorDivOp: "/", VerifModOp: "%",
-    VerifEqOp: "==", VerifNeOp: "!=", VerifLtOp: "<", VerifLeOp: "<=",
-    VerifGtOp: ">", VerifGeOp: ">=", VerifAndOp: "&&", VerifOrOp: "||",
+    VerifAddOp: "+",
+    VerifSubOp: "-",
+    VerifMulOp: "*",
+    VerifFloorDivOp: "/",
+    VerifModOp: "%",
+    VerifEqOp: "==",
+    VerifNeOp: "!=",
+    VerifLtOp: "<",
+    VerifLeOp: "<=",
+    VerifGtOp: ">",
+    VerifGeOp: ">=",
+    VerifAndOp: "&&",
+    VerifOrOp: "||",
 }
 
 Verif = Dialect("verif", [VerifFuncOp, VerifConstantOp, VerifParamRefOp, VerifNegOp, VerifIfOp, VerifReturnOp, *VERIF_BIN_BY_KIND.values()], [])
@@ -296,11 +341,19 @@ i1 = IntegerType(1)
 ANNOTATION_RE = re.compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
 
 AST_OP: dict[type, tuple[str, IntegerType]] = {
-    ast.Eq: ("eq", i1), ast.NotEq: ("ne", i1), ast.Lt: ("lt", i1),
-    ast.LtE: ("le", i1), ast.Gt: ("gt", i1), ast.GtE: ("ge", i1),
-    ast.Add: ("add", i64), ast.Sub: ("sub", i64), ast.Mult: ("mul", i64),
-    ast.FloorDiv: ("floordiv", i64), ast.Mod: ("mod", i64),
-    ast.And: ("and", i1), ast.Or: ("or", i1),
+    ast.Eq: ("eq", i1),
+    ast.NotEq: ("ne", i1),
+    ast.Lt: ("lt", i1),
+    ast.LtE: ("le", i1),
+    ast.Gt: ("gt", i1),
+    ast.GtE: ("ge", i1),
+    ast.Add: ("add", i64),
+    ast.Sub: ("sub", i64),
+    ast.Mult: ("mul", i64),
+    ast.FloorDiv: ("floordiv", i64),
+    ast.Mod: ("mod", i64),
+    ast.And: ("and", i1),
+    ast.Or: ("or", i1),
 }
 
 
@@ -346,94 +399,176 @@ def _extract_loop_annotations(source: str, node: ast.While) -> tuple[list[str], 
     return invariants, decreases_list
 
 
-def _emit(ops: list, op: Operation) -> Operation:
-    ops.append(op)
-    return op
+class PyASTVisitor(ast.NodeVisitor):
+    inserter: OpInserter
+    source: str
+    file: str | None
+    scope: dict[str, IntegerType]
+    locals_: set[str]
+
+    def __init__(self, module: ModuleOp, source: str, file: str | None = None):
+        self.source = source
+        self.file = file
+        self.scope = {}
+        self.locals_ = set()
+        self.inserter = OpInserter(module.body.block)
+
+    def _err(self, node: ast.AST, msg: str) -> CodeGenerationException:
+        return CodeGenerationException(self.file, getattr(node, "lineno", 0), getattr(node, "col_offset", 0), msg)
+
+    def generic_visit(self, node: ast.AST) -> None:
+        raise self._err(node, f"unsupported AST node: {ast.dump(node)}")
+
+    def visit_Module(self, node: ast.Module) -> None:
+        for child in node.body:
+            if isinstance(child, ast.FunctionDef):
+                self.visit(child)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        requires, ensures = _extract_annotations(self.source, node)
+        param_names = [arg.arg for arg in node.args.args]
+        param_types = [_resolve_type(arg.annotation) for arg in node.args.args]
+        return_type = [_resolve_type(node.returns)] if node.returns else []
+        self.scope = dict(zip(param_names, param_types))
+        self.locals_ = set()
+
+        body_block = Block()
+        func_op = FuncOp(node.name, param_names, (param_types, return_type), requires=requires, ensures=ensures, body=Region([body_block]))
+        saved = self.inserter.insertion_point
+        self.inserter.insert_op(func_op)
+        self.inserter.set_insertion_point_from_block(body_block)
+        for s in node.body:
+            if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant):
+                continue
+            self.visit(s)
+        self.inserter.set_insertion_point_from_block(saved)
+
+    # -- expressions --
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        match node.value:
+            case bool() as v:
+                self.inserter.insert_op(ConstantOp(1 if v else 0, i1))
+            case int() as v:
+                self.inserter.insert_op(ConstantOp(v, i64))
+            case _:
+                raise self._err(node, f"unsupported constant: {node.value!r}")
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in self.locals_:
+            self.inserter.insert_op(VarRefOp(node.id, self.scope.get(node.id, i64)))
+        else:
+            self.inserter.insert_op(ParamRefOp(node.id, self.scope.get(node.id, i64)))
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> None:
+        if not isinstance(node.op, ast.USub):
+            raise self._err(node, f"unsupported unary op: {type(node.op).__name__}")
+        self.visit(node.operand)
+        self.inserter.insert_op(NegOp(self.inserter.get_operand(), i64))
+
+    def visit_BinOp(self, node: ast.BinOp) -> None:
+        self.visit(node.left)
+        lhs = self.inserter.get_operand()
+        self.visit(node.right)
+        rhs = self.inserter.get_operand()
+        s, ty = AST_OP[type(node.op)]
+        self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
+
+    def visit_Compare(self, node: ast.Compare) -> None:
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            raise self._err(node, "only single comparisons supported")
+        self.visit(node.left)
+        lhs = self.inserter.get_operand()
+        self.visit(node.comparators[0])
+        rhs = self.inserter.get_operand()
+        s, ty = AST_OP[type(node.ops[0])]
+        self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        self.visit(node.values[0])
+        lhs = self.inserter.get_operand()
+        self.visit(node.values[1])
+        rhs = self.inserter.get_operand()
+        s, ty = AST_OP[type(node.op)]
+        self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Name):
+            raise self._err(node, "only simple function calls supported")
+        args = []
+        for a in node.args:
+            self.visit(a)
+            args.append(self.inserter.get_operand())
+        self.inserter.insert_op(CallOp(node.func.id, args, i64))
+
+    # -- statements --
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            raise self._err(node, "only single-name assignment supported")
+        name = node.targets[0].id
+        self.visit(node.value)
+        val = self.inserter.get_operand()
+        is_decl = name not in self.locals_ and name not in self.scope
+        self.inserter.insert_op(AssignOp(name, val, is_decl))
+        self.scope[name] = i64
+        self.locals_.add(name)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if node.value is None:
+            raise self._err(node, "return without value not supported")
+        self.visit(node.value)
+        self.inserter.insert_op(ReturnOp(self.inserter.get_operand()))
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        cond = self.inserter.get_operand()
+        saved = self.inserter.insertion_point
+
+        then_region = Region([Block()])
+        self.inserter.set_insertion_point_from_region(then_region)
+        for s in node.body:
+            self.visit(s)
+
+        else_region = None
+        if node.orelse:
+            else_region = Region([Block()])
+            self.inserter.set_insertion_point_from_region(else_region)
+            for s in node.orelse:
+                self.visit(s)
+
+        self.inserter.set_insertion_point_from_block(saved)
+        self.inserter.insert_op(IfOp(cond, then_region, else_region))
+
+    def visit_Expr(self, node: ast.Expr) -> None:
+        if isinstance(node.value, ast.Constant):
+            return
+        self.visit(node.value)
+        if self.inserter.stack:
+            self.inserter.get_operand()
+
+    def visit_Assert(self, node: ast.Assert) -> None:
+        self.visit(node.test)
+        self.inserter.insert_op(AssertOp(self.inserter.get_operand()))
+
+    def visit_While(self, node: ast.While) -> None:
+        invariants, decreases_list = _extract_loop_annotations(self.source, node)
+        saved = self.inserter.insertion_point
+
+        body_region = Region([Block()])
+        self.inserter.set_insertion_point_from_region(body_region)
+        for s in node.body:
+            self.visit(s)
+
+        self.inserter.set_insertion_point_from_block(saved)
+        self.inserter.insert_op(WhileOp(ast.unparse(node.test), body_region, invariants=invariants, decreases=decreases_list))
 
 
-def _lower_block(stmts: Iterable[ast.stmt], scope: dict[str, IntegerType], locals_: set[str], source: str = "") -> list[Operation]:
-    ops: list[Operation] = []
-    for s in stmts:
-        _lower_stmt(s, ops, scope, locals_, source)
-    return ops
-
-
-def _lower_expr(node: ast.expr, ops: list, scope: dict[str, IntegerType], locals_: set[str]) -> Operation:
-    match node:
-        case ast.Constant(value=bool() as v):
-            return _emit(ops, ConstantOp(1 if v else 0, i1))
-        case ast.Constant(value=int() as v):
-            return _emit(ops, ConstantOp(v, i64))
-        case ast.Name(id=name):
-            if name in locals_:
-                return _emit(ops, VarRefOp(name, scope.get(name, i64)))
-            return _emit(ops, ParamRefOp(name, scope.get(name, i64)))
-        case ast.UnaryOp(op=ast.USub(), operand=operand):
-            return _emit(ops, NegOp(_lower_expr(operand, ops, scope, locals_), i64))
-        case ast.Compare(left=left, ops=[cmp_op], comparators=[comp]):
-            lhs, rhs = _lower_expr(left, ops, scope, locals_), _lower_expr(comp, ops, scope, locals_)
-            s, ty = AST_OP[type(cmp_op)]
-            return _emit(ops, BinOp(s, lhs, rhs, ty))
-        case ast.BinOp(left=left, op=bin_op, right=right):
-            lhs, rhs = _lower_expr(left, ops, scope, locals_), _lower_expr(right, ops, scope, locals_)
-            s, ty = AST_OP[type(bin_op)]
-            return _emit(ops, BinOp(s, lhs, rhs, ty))
-        case ast.BoolOp(op=bool_op, values=[v1, v2, *_]):
-            lhs, rhs = _lower_expr(v1, ops, scope, locals_), _lower_expr(v2, ops, scope, locals_)
-            s, ty = AST_OP[type(bool_op)]
-            return _emit(ops, BinOp(s, lhs, rhs, ty))
-        case ast.Call(func=ast.Name(id=callee), args=args):
-            lowered_args = [_lower_expr(a, ops, scope, locals_) for a in args]
-            return _emit(ops, CallOp(callee, lowered_args, i64))
-        case _:
-            raise NotImplementedError(f"unsupported expression: {ast.dump(node)}")
-
-
-def _lower_stmt(stmt: ast.stmt, ops: list, scope: dict[str, IntegerType], locals_: set[str], source: str = "") -> None:
-    match stmt:
-        case ast.Assign(targets=[ast.Name(id=name)], value=value):
-            val = _lower_expr(value, ops, scope, locals_)
-            is_decl = name not in locals_ and name not in scope
-            _emit(ops, AssignOp(name, val, is_decl))
-            scope[name] = i64
-            locals_.add(name)
-        case ast.Return(value=value) if value is not None:
-            _emit(ops, ReturnOp(_lower_expr(value, ops, scope, locals_)))
-        case ast.If(test=test, body=body, orelse=orelse):
-            cond = _lower_expr(test, ops, scope, locals_)
-            then_ops = _lower_block(body, scope, locals_, source)
-            else_ops = _lower_block(orelse, scope, locals_, source)
-            ops.append(IfOp(cond, Region([Block(then_ops)]), Region([Block(else_ops)]) if else_ops else None))
-        case ast.Expr(value=ast.Call(func=ast.Name(id=callee), args=args)):
-            lowered_args = [_lower_expr(a, ops, scope, locals_) for a in args]
-            _emit(ops, CallOp(callee, lowered_args, i64))
-        case ast.Assert(test=test):
-            _emit(ops, AssertOp(_lower_expr(test, ops, scope, locals_)))
-        case ast.While(test=test, body=body):
-            invariants, decreases_list = _extract_loop_annotations(source, stmt)
-            body_ops = _lower_block(body, scope, locals_, source)
-            ops.append(WhileOp(ast.unparse(test), Region([Block(body_ops)]), invariants=invariants, decreases=decreases_list))
-        case _:
-            raise NotImplementedError(f"unsupported statement: {ast.dump(stmt)}")
-
-
-def _lower_function(source: str, func_node: ast.FunctionDef) -> FuncOp:
-    requires, ensures = _extract_annotations(source, func_node)
-    param_names = [arg.arg for arg in func_node.args.args]
-    param_types = [_resolve_type(arg.annotation) for arg in func_node.args.args]
-    return_type = [_resolve_type(func_node.returns)] if func_node.returns else []
-    scope = dict(zip(param_names, param_types))
-    body_stmts = [s for s in func_node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
-    return FuncOp(func_node.name, param_names, (param_types, return_type), requires=requires, ensures=ensures, body=Region([Block(_lower_block(body_stmts, scope, set(), source))]))
-
-
-def ingest(source: str) -> ModuleOp:
-    tree = ast.parse(source)
-    ops = []
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef):
-            ops.append(_lower_function(source, node))
-    return ModuleOp(ops)
+def ingest(source: str, file: str | None = None) -> ModuleOp:
+    module = ModuleOp([])
+    visitor = PyASTVisitor(module, source, file)
+    visitor.visit(ast.parse(source))
+    return module
 
 
 #
