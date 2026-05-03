@@ -1,5 +1,6 @@
 import ast, re, subprocess, sys
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -493,41 +494,65 @@ def resolve(module: ModuleOp) -> ModuleOp:
 
 
 #
-# printer (consumes verif)
+# dafny dialect
 #
+
+
+@dataclass
+class DfyVarDecl:
+    name: str
+    expr: str
+
+
+@dataclass
+class DfyAssign:
+    name: str
+    expr: str
+
+
+@dataclass
+class DfyAssert:
+    expr: str
+
+
+@dataclass
+class DfyReturn:
+    ret_var: str
+    expr: str
+
+
+@dataclass
+class DfyIf:
+    cond: str
+    then_body: list
+    else_body: list
+
+
+@dataclass
+class DfyWhile:
+    cond: str
+    invariants: list
+    decreases: list
+    body: list
+
+
+@dataclass
+class DfyMethod:
+    name: str
+    params: list
+    ret_var: str
+    ret_type: str
+    requires: list
+    ensures: list
+    body: list
 
 
 def _rewrite_spec(clause: str) -> str:
     return re.sub(r"\band\b", "&&", re.sub(r"\bor\b", "||", re.sub(r"\bresult\b", "r", clause)))
 
 
-def print_dafny(module: ModuleOp) -> str:
-    return "\n".join(_print_func(op) for op in module.body.block.ops if isinstance(op, VerifFuncOp))
-
-
-def _print_func(func: VerifFuncOp) -> str:
-    param_names = [attr.data for attr in func.param_names]
-    param_types = list(func.function_type.inputs)
-    params = [f"{name}: {'bool' if ty.width.data == 1 else 'int'}" for name, ty in zip(param_names, param_types)]
-    ret_type = list(func.function_type.outputs)[0]
-
-    lines = [f"method {func.sym_name.data}({', '.join(params)}) returns (r: {'bool' if ret_type.width.data == 1 else 'int'})"]
-
-    for clause in func.requires:
-        lines.append(f"  requires {_rewrite_spec(clause.data)}")
-    for clause in func.ensures:
-        lines.append(f"  ensures {_rewrite_spec(clause.data)}")
-
-    lines.append("{")
-    exprs: dict[SSAValue, str] = {}
-    lines.extend(_emit_ops(func.body.block.ops, exprs, "  "))
-    lines.append("}")
-
-    return "\n".join(lines)
-
-
-def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str) -> list[str]:
-    lines: list[str] = []
+def _lower_dfy_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str]) -> list:
+    stmts: list = []
     for op in ops:
         if type(op) in VERIF_BIN_SYMBOL:
             exprs[op.result] = f"{exprs[op.lhs]} {VERIF_BIN_SYMBOL[type(op)]} {exprs[op.rhs]}"
@@ -548,29 +573,95 @@ def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str)
                 args = ", ".join(exprs[a] for a in op.arguments)
                 exprs[op.result] = f"{op.callee.data}({args})"
             case AssignOp():
-                decl = "var " if op.is_decl.value.data else ""
-                lines.append(f"{indent}{decl}{op.var_name.data} := {exprs[op.value]};")
+                if op.is_decl.value.data:
+                    stmts.append(DfyVarDecl(op.var_name.data, exprs[op.value]))
+                else:
+                    stmts.append(DfyAssign(op.var_name.data, exprs[op.value]))
             case AssertOp():
-                lines.append(f"{indent}assert {exprs[op.cond]};")
+                stmts.append(DfyAssert(exprs[op.cond]))
             case VerifReturnOp():
-                lines.append(f"{indent}r := {exprs[op.value]};")
-                lines.append(f"{indent}return;")
+                stmts.append(DfyReturn("r", exprs[op.value]))
             case VerifIfOp():
-                lines.append(f"{indent}if {exprs[op.cond]} {{")
-                lines.extend(_emit_ops(op.then_region.block.ops, exprs, indent + "  "))
-                lines.append(f"{indent}}}")
-                if len(op.else_region.blocks) > 0:
-                    lines.extend(_emit_ops(op.else_region.block.ops, exprs, indent))
+                then_stmts = _lower_dfy_ops(op.then_region.block.ops, exprs)
+                else_stmts = _lower_dfy_ops(op.else_region.block.ops, exprs) if len(op.else_region.blocks) > 0 else []
+                stmts.append(DfyIf(exprs[op.cond], then_stmts, else_stmts))
             case WhileOp():
-                lines.append(f"{indent}while {_rewrite_spec(op.cond_text.data)}")
-                for inv in op.invariants:
-                    lines.append(f"{indent}  invariant {_rewrite_spec(inv.data)}")
-                for dec in op.decreases:
-                    lines.append(f"{indent}  decreases {_rewrite_spec(dec.data)}")
+                body_stmts = _lower_dfy_ops(op.body.block.ops, exprs)
+                stmts.append(DfyWhile(
+                    _rewrite_spec(op.cond_text.data),
+                    [_rewrite_spec(inv.data) for inv in op.invariants],
+                    [_rewrite_spec(dec.data) for dec in op.decreases],
+                    body_stmts,
+                ))
+    return stmts
+
+
+def _lower_dfy_func(func: VerifFuncOp) -> DfyMethod:
+    param_names = [attr.data for attr in func.param_names]
+    param_types = list(func.function_type.inputs)
+    params = [(name, "bool" if ty.width.data == 1 else "int") for name, ty in zip(param_names, param_types)]
+    ret_type = list(func.function_type.outputs)[0]
+    exprs: dict[SSAValue, str] = {}
+    body = _lower_dfy_ops(func.body.block.ops, exprs)
+    return DfyMethod(
+        func.sym_name.data, params, "r",
+        "bool" if ret_type.width.data == 1 else "int",
+        [_rewrite_spec(c.data) for c in func.requires],
+        [_rewrite_spec(c.data) for c in func.ensures],
+        body,
+    )
+
+
+def lower_to_dafny(module: ModuleOp) -> list[DfyMethod]:
+    return [_lower_dfy_func(op) for op in module.body.block.ops if isinstance(op, VerifFuncOp)]
+
+
+def _fmt_dfy_stmts(stmts: list, indent: str) -> list[str]:
+    lines: list[str] = []
+    for stmt in stmts:
+        match stmt:
+            case DfyVarDecl(name, expr):
+                lines.append(f"{indent}var {name} := {expr};")
+            case DfyAssign(name, expr):
+                lines.append(f"{indent}{name} := {expr};")
+            case DfyAssert(expr):
+                lines.append(f"{indent}assert {expr};")
+            case DfyReturn(ret_var, expr):
+                lines.append(f"{indent}{ret_var} := {expr};")
+                lines.append(f"{indent}return;")
+            case DfyIf(cond, then_body, else_body):
+                lines.append(f"{indent}if {cond} {{")
+                lines.extend(_fmt_dfy_stmts(then_body, indent + "  "))
+                lines.append(f"{indent}}}")
+                if else_body:
+                    lines.extend(_fmt_dfy_stmts(else_body, indent))
+            case DfyWhile(cond, invariants, decreases, body):
+                lines.append(f"{indent}while {cond}")
+                for inv in invariants:
+                    lines.append(f"{indent}  invariant {inv}")
+                for dec in decreases:
+                    lines.append(f"{indent}  decreases {dec}")
                 lines.append(f"{indent}{{")
-                lines.extend(_emit_ops(op.body.block.ops, exprs, indent + "  "))
+                lines.extend(_fmt_dfy_stmts(body, indent + "  "))
                 lines.append(f"{indent}}}")
     return lines
+
+
+def _fmt_dfy_method(m: DfyMethod) -> str:
+    params = ", ".join(f"{n}: {t}" for n, t in m.params)
+    lines = [f"method {m.name}({params}) returns ({m.ret_var}: {m.ret_type})"]
+    for r in m.requires:
+        lines.append(f"  requires {r}")
+    for e in m.ensures:
+        lines.append(f"  ensures {e}")
+    lines.append("{")
+    lines.extend(_fmt_dfy_stmts(m.body, "  "))
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def print_dafny(module: ModuleOp) -> str:
+    return "\n".join(_fmt_dfy_method(m) for m in lower_to_dafny(module))
 
 
 #
