@@ -653,29 +653,13 @@ def _emit_lean_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent:
 #
 
 
-def _llm_add_proof(dfy_source: str, error: str) -> str:
-    try:
-        import anthropic
-    except ImportError:
-        click.echo("anthropic package required for --regen (pip install anthropic)", err=True)
-        sys.exit(1)
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": f"This Dafny program fails verification:\n\n```dafny\n{dfy_source}\n```\n\nError:\n```\n{error}\n```\n\nFix the program by adding assertions, lemma calls, or strengthening invariants. Return ONLY the complete fixed Dafny source, no explanation."}],
-    )
-    return response.content[0].text
-
-
 @click.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option("--ir-py", "fmt", flag_value="ir-py", help="Print py-dialect IR (pre-resolve)")
 @click.option("--ir", "fmt", flag_value="ir", help="Print verif-dialect IR (post-resolve)")
 @click.option("--dfy", "fmt", flag_value="dfy", help="Print Dafny source")
 @click.option("--lean", "fmt", flag_value="lean", help="Print Lean 4 source")
-@click.option("--regen", is_flag=True, help="On verify failure, use LLM to add proof annotations and retry")
-def cli(file: Path, fmt: str | None, regen: bool):
+def cli(file: Path, fmt: str | None):
     source = Path(file).read_text()
     module = ingest(source)
     if fmt == "ir-py":
@@ -695,21 +679,6 @@ def cli(file: Path, fmt: str | None, regen: bool):
     dfy_path = Path(file).with_suffix(".dfy")
     dfy_path.write_text(dfy + "\n")
     result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name], capture_output=True, text=True)
-    if result.returncode == 0 or not regen:
-        if result.stdout:
-            click.echo(result.stdout)
-        if result.stderr:
-            click.echo(result.stderr, err=True)
-        sys.exit(result.returncode)
-    for attempt in range(3):
-        click.echo(f"Verification failed, regen attempt {attempt + 1}/3...", err=True)
-        error = result.stdout + result.stderr
-        dfy = _llm_add_proof(dfy, error)
-        dfy_path.write_text(dfy + "\n")
-        result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name], capture_output=True, text=True)
-        if result.returncode == 0:
-            click.echo(f"Verification succeeded after {attempt + 1} regen attempt(s).", err=True)
-            break
     if result.stdout:
         click.echo(result.stdout)
     if result.stderr:
