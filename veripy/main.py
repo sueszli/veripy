@@ -574,81 +574,6 @@ def _emit_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str)
 
 
 #
-# lean printer
-# TODO(xdsl-upstream): Lean 4 printer/emitter infrastructure
-#
-
-OP_SYMBOLS = {"ge": ">=", "le": "<=", "gt": ">", "lt": "<", "eq": "==", "ne": "!=", "add": "+", "sub": "-", "mul": "*", "and": "&&", "or": "||"}
-
-
-def print_lean(module: ModuleOp) -> str:
-    return "\n\n".join(_print_lean_func(op) for op in module.body.block.ops if isinstance(op, VerifFuncOp))
-
-
-def _lean_type(ty: IntegerType) -> str:
-    return "Bool" if ty.width.data == 1 else "Int"
-
-
-def _print_lean_func(func: VerifFuncOp) -> str:
-    param_names = [attr.data for attr in func.param_names]
-    param_types = list(func.function_type.inputs)
-    params = " ".join(f"({name} : {_lean_type(ty)})" for name, ty in zip(param_names, param_types))
-    ret_type = _lean_type(list(func.function_type.outputs)[0])
-    lines = [f"def {func.sym_name.data} {params} : {ret_type} :="]
-    for clause in func.requires:
-        lines.append(f"  -- requires {clause.data}")
-    for clause in func.ensures:
-        lines.append(f"  -- ensures {clause.data}")
-    exprs: dict[SSAValue, str] = {}
-    lines.extend(_emit_lean_ops(func.body.block.ops, exprs, "  "))
-    return "\n".join(lines)
-
-
-def _emit_lean_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent: str) -> list[str]:
-    lines: list[str] = []
-    for op in ops:
-        if type(op) in VERIF_BIN_SYMBOL:
-            exprs[op.result] = f"{exprs[op.lhs]} {VERIF_BIN_SYMBOL[type(op)]} {exprs[op.rhs]}"
-            continue
-        match op:
-            case VerifConstantOp():
-                if op.value.type.width.data == 1:
-                    exprs[op.result] = "true" if op.value.value.data else "false"
-                else:
-                    exprs[op.result] = str(op.value.value.data)
-            case VerifParamRefOp():
-                exprs[op.result] = op.param_name.data
-            case VarRefOp():
-                exprs[op.result] = op.var_name.data
-            case VerifNegOp():
-                exprs[op.result] = f"-{exprs[op.operand]}"
-            case CallOp():
-                args = " ".join(exprs[a] for a in op.arguments)
-                exprs[op.result] = f"{op.callee.data} {args}" if args else op.callee.data
-            case AssignOp():
-                decl = "let mut " if op.is_decl.value.data else ""
-                lines.append(f"{indent}{decl}{op.var_name.data} := {exprs[op.value]}")
-            case AssertOp():
-                lines.append(f"{indent}assert {exprs[op.cond]}")
-            case VerifReturnOp():
-                lines.append(f"{indent}{exprs[op.value]}")
-            case VerifIfOp():
-                lines.append(f"{indent}if {exprs[op.cond]} then")
-                lines.extend(_emit_lean_ops(op.then_region.block.ops, exprs, indent + "  "))
-                if len(op.else_region.blocks) > 0 and list(op.else_region.block.ops):
-                    lines.append(f"{indent}else")
-                    lines.extend(_emit_lean_ops(op.else_region.block.ops, exprs, indent))
-            case WhileOp():
-                lines.append(f"{indent}while {op.cond_text.data} do")
-                for inv in op.invariants:
-                    lines.append(f"{indent}  invariant {inv.data}")
-                for dec in op.decreases:
-                    lines.append(f"{indent}  decreasing {dec.data}")
-                lines.extend(_emit_lean_ops(op.body.block.ops, exprs, indent + "  "))
-    return lines
-
-
-#
 # cli
 #
 
@@ -658,7 +583,6 @@ def _emit_lean_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str], indent:
 @click.option("--ir-py", "fmt", flag_value="ir-py", help="Print py-dialect IR (pre-resolve)")
 @click.option("--ir", "fmt", flag_value="ir", help="Print verif-dialect IR (post-resolve)")
 @click.option("--dfy", "fmt", flag_value="dfy", help="Print Dafny source")
-@click.option("--lean", "fmt", flag_value="lean", help="Print Lean 4 source")
 def cli(file: Path, fmt: str | None):
     source = Path(file).read_text()
     module = ingest(source)
@@ -668,9 +592,6 @@ def cli(file: Path, fmt: str | None):
     resolve(module)
     if fmt == "ir":
         Printer().print(module)
-        return
-    if fmt == "lean":
-        click.echo(print_lean(module))
         return
     dfy = print_dafny(module)
     if fmt == "dfy":
