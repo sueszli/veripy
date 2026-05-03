@@ -806,21 +806,21 @@ def print_dafny(module: ModuleOp) -> str:
 
 @click.command()
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
-@click.option("--ir-py", "fmt", flag_value="ir-py", help="Print py-dialect IR (pre-resolve)")
-@click.option("--ir", "fmt", flag_value="ir", help="Print verif-dialect IR (post-resolve)")
-@click.option("--dfy", "fmt", flag_value="dfy", help="Print Dafny source")
+@click.option("--parsed", "fmt", flag_value="parsed", help="Print IR after parsing, before resolution")
+@click.option("--resolved", "fmt", flag_value="resolved", help="Print IR after name/type resolution")
+@click.option("--dafny", "fmt", flag_value="dafny", help="Print generated Dafny source")
 def cli(file: Path, fmt: str | None):
     source = Path(file).read_text()
     module = ingest(source)
-    if fmt == "ir-py":
+    if fmt == "parsed":
         Printer().print(module)
         return
     resolve(module)
-    if fmt == "ir":
+    if fmt == "resolved":
         Printer().print(module)
         return
     dfy = print_dafny(module)
-    if fmt == "dfy":
+    if fmt == "dafny":
         click.echo(dfy)
         return
     dfy_path = Path(file).with_suffix(".dfy")
