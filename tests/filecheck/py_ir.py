@@ -1,4 +1,4 @@
-# RUN: veripy %s | filecheck %s
+# RUN: veripy %s -p "" -t mlir | filecheck %s
 
 def f(a: int, b: int) -> int:
     return a + b

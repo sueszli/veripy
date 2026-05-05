@@ -1097,6 +1097,7 @@ class VeriPyMain(xDSLOptMain):
 
     def register_all_arguments(self, arg_parser: argparse.ArgumentParser):
         super().register_all_arguments(arg_parser)
+        arg_parser.set_defaults(passes="resolve", target="dfy")
         arg_parser.add_argument("--verify", default=False, action="store_true", help="Compile to Dafny and verify via Docker")
 
     def apply_passes(self, prog: ModuleOp) -> bool:
