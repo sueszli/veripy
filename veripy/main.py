@@ -1,24 +1,75 @@
+import argparse
 import ast
-import re
 import subprocess
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from re import compile as re_compile
+from typing import IO
 
-import click
+from xdsl.context import Context
 from xdsl.dialects.builtin import ArrayAttr, FunctionType, IntegerAttr, IntegerType, ModuleOp, StringAttr
 from xdsl.frontend.pyast.utils.exceptions import CodeGenerationException
 from xdsl.frontend.pyast.utils.op_inserter import OpInserter
 from xdsl.ir import Block, Dialect, Operation, Region, SSAValue
 from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def, var_operand_def
+from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
 from xdsl.printer import Printer
+from xdsl.utils.target import Target
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
+from xdsl.xdsl_opt_main import xDSLOptMain
 
 #
-# dialect
+# py dialect
 #
+
+
+@irdl_op_definition
+class YieldOp(IRDLOperation):
+    name = "py.yield"
+    value = operand_def()
+    traits = traits_def(IsTerminator())
+
+    def __init__(self, value: SSAValue | Operation):
+        super().__init__(operands=[value])
+
+
+@irdl_op_definition
+class RequiresOp(IRDLOperation):
+    name = "py.requires"
+    cond_region = region_def()
+
+    def __init__(self, cond_region: Region):
+        super().__init__(regions=[cond_region])
+
+
+@irdl_op_definition
+class EnsuresOp(IRDLOperation):
+    name = "py.ensures"
+    cond_region = region_def()
+
+    def __init__(self, cond_region: Region):
+        super().__init__(regions=[cond_region])
+
+
+@irdl_op_definition
+class InvariantOp(IRDLOperation):
+    name = "py.invariant"
+    cond_region = region_def()
+
+    def __init__(self, cond_region: Region):
+        super().__init__(regions=[cond_region])
+
+
+@irdl_op_definition
+class DecreasesOp(IRDLOperation):
+    name = "py.decreases"
+    expr_region = region_def()
+
+    def __init__(self, expr_region: Region):
+        super().__init__(regions=[expr_region])
 
 
 @irdl_op_definition
@@ -27,15 +78,13 @@ class FuncOp(IRDLOperation):
     sym_name = prop_def(StringAttr)
     function_type = prop_def(FunctionType)
     param_names = prop_def(ArrayAttr[StringAttr])
-    requires = prop_def(ArrayAttr[StringAttr])
-    ensures = prop_def(ArrayAttr[StringAttr])
     body = region_def()
     traits = traits_def(IsolatedFromAbove())
 
-    def __init__(self, func_name: str, param_names: Sequence[str], function_type: tuple[Sequence, Sequence] | FunctionType, *, requires: Sequence[str] | None = None, ensures: Sequence[str] | None = None, body: Region | None = None):
+    def __init__(self, func_name: str, param_names: Sequence[str], function_type: tuple[Sequence, Sequence] | FunctionType, *, body: Region | None = None):
         if isinstance(function_type, tuple):
             function_type = FunctionType.from_lists(*function_type)
-        super().__init__(properties={"sym_name": StringAttr(func_name), "function_type": function_type, "param_names": ArrayAttr([StringAttr(n) for n in param_names]), "requires": ArrayAttr([StringAttr(s) for s in (requires or [])]), "ensures": ArrayAttr([StringAttr(s) for s in (ensures or [])])}, regions=[body if body is not None else Region()])
+        super().__init__(properties={"sym_name": StringAttr(func_name), "function_type": function_type, "param_names": ArrayAttr([StringAttr(n) for n in param_names])}, regions=[body if body is not None else Region()])
 
 
 @irdl_op_definition
@@ -105,7 +154,6 @@ class ReturnOp(IRDLOperation):
         super().__init__(operands=[value])
 
 
-# TODO(xdsl-upstream): verif dialect with first-class assert/invariant/decreases/requires/ensures ops
 @irdl_op_definition
 class AssertOp(IRDLOperation):
     name = "py.assert"
@@ -149,28 +197,68 @@ class VarRefOp(IRDLOperation):
         super().__init__(properties={"var_name": StringAttr(var_name)}, result_types=[result_type])
 
 
-# TODO(xdsl-upstream): scf.SimpleWhileOp with imperative semantics (current scf.WhileOp requires SSA loop-carried values)
 @irdl_op_definition
 class WhileOp(IRDLOperation):
     name = "py.while"
-    cond_text = prop_def(StringAttr)
-    invariants = prop_def(ArrayAttr[StringAttr])
-    decreases = prop_def(ArrayAttr[StringAttr])
+    cond_region = region_def()
     body = region_def()
 
-    def __init__(self, cond_text: str, body: Region, *, invariants: Sequence[str] | None = None, decreases: Sequence[str] | None = None):
-        super().__init__(properties={"cond_text": StringAttr(cond_text), "invariants": ArrayAttr([StringAttr(s) for s in (invariants or [])]), "decreases": ArrayAttr([StringAttr(s) for s in (decreases or [])])}, regions=[body])
+    def __init__(self, cond_region: Region, body: Region):
+        super().__init__(regions=[cond_region, body])
 
 
-Py = Dialect("py", [FuncOp, ConstantOp, ParamRefOp, BinOp, NegOp, IfOp, ReturnOp, AssertOp, CallOp, AssignOp, VarRefOp, WhileOp], [])
+Py = Dialect("py", [YieldOp, RequiresOp, EnsuresOp, InvariantOp, DecreasesOp, FuncOp, ConstantOp, ParamRefOp, BinOp, NegOp, IfOp, ReturnOp, AssertOp, CallOp, AssignOp, VarRefOp, WhileOp], [])
 
 
 #
 # verif dialect
 #
-# Mirrors py but with typed-per-operator binary ops: the string op_kind in
-# py.binop is split into one verif op per operator. Spec strings stay as
-# StringAttr for now (structured spec lowering is a follow-up).
+
+
+@irdl_op_definition
+class VerifYieldOp(IRDLOperation):
+    name = "verif.yield"
+    value = operand_def()
+    traits = traits_def(IsTerminator())
+
+    def __init__(self, value: SSAValue):
+        super().__init__(operands=[value])
+
+
+@irdl_op_definition
+class VerifRequiresOp(IRDLOperation):
+    name = "verif.requires"
+    cond_region = region_def()
+
+    def __init__(self, cond_region: Region):
+        super().__init__(regions=[cond_region])
+
+
+@irdl_op_definition
+class VerifEnsuresOp(IRDLOperation):
+    name = "verif.ensures"
+    cond_region = region_def()
+
+    def __init__(self, cond_region: Region):
+        super().__init__(regions=[cond_region])
+
+
+@irdl_op_definition
+class VerifInvariantOp(IRDLOperation):
+    name = "verif.invariant"
+    cond_region = region_def()
+
+    def __init__(self, cond_region: Region):
+        super().__init__(regions=[cond_region])
+
+
+@irdl_op_definition
+class VerifDecreasesOp(IRDLOperation):
+    name = "verif.decreases"
+    expr_region = region_def()
+
+    def __init__(self, expr_region: Region):
+        super().__init__(regions=[expr_region])
 
 
 @irdl_op_definition
@@ -179,13 +267,11 @@ class VerifFuncOp(IRDLOperation):
     sym_name = prop_def(StringAttr)
     function_type = prop_def(FunctionType)
     param_names = prop_def(ArrayAttr[StringAttr])
-    requires = prop_def(ArrayAttr[StringAttr])
-    ensures = prop_def(ArrayAttr[StringAttr])
     body = region_def()
     traits = traits_def(IsolatedFromAbove())
 
-    def __init__(self, func_name: str, param_names: Sequence[str], function_type: FunctionType, *, requires: ArrayAttr[StringAttr], ensures: ArrayAttr[StringAttr], body: Region):
-        super().__init__(properties={"sym_name": StringAttr(func_name), "function_type": function_type, "param_names": ArrayAttr([StringAttr(n) for n in param_names]), "requires": requires, "ensures": ensures}, regions=[body])
+    def __init__(self, func_name: str, param_names: Sequence[str], function_type: FunctionType, *, body: Region):
+        super().__init__(properties={"sym_name": StringAttr(func_name), "function_type": function_type, "param_names": ArrayAttr([StringAttr(n) for n in param_names])}, regions=[body])
 
 
 @irdl_op_definition
@@ -242,6 +328,59 @@ class VerifReturnOp(IRDLOperation):
         super().__init__(operands=[value])
 
 
+@irdl_op_definition
+class VerifAssignOp(IRDLOperation):
+    name = "verif.assign"
+    var_name = prop_def(StringAttr)
+    is_decl = prop_def(IntegerAttr)
+    value = operand_def()
+
+    def __init__(self, var_name: StringAttr, is_decl: IntegerAttr, value: SSAValue):
+        super().__init__(operands=[value], properties={"var_name": var_name, "is_decl": is_decl})
+
+
+@irdl_op_definition
+class VerifVarRefOp(IRDLOperation):
+    name = "verif.var_ref"
+    var_name = prop_def(StringAttr)
+    result = result_def()
+    traits = traits_def(Pure())
+
+    def __init__(self, var_name: StringAttr, result_type: IntegerType):
+        super().__init__(properties={"var_name": var_name}, result_types=[result_type])
+
+
+@irdl_op_definition
+class VerifCallOp(IRDLOperation):
+    name = "verif.call"
+    callee = prop_def(StringAttr)
+    arguments = var_operand_def()
+    result = result_def()
+    traits = traits_def(Pure())
+
+    def __init__(self, callee: StringAttr, arguments: Sequence[SSAValue], result_type: IntegerType):
+        super().__init__(operands=[arguments], properties={"callee": callee}, result_types=[result_type])
+
+
+@irdl_op_definition
+class VerifAssertOp(IRDLOperation):
+    name = "verif.assert"
+    cond = operand_def()
+
+    def __init__(self, cond: SSAValue):
+        super().__init__(operands=[cond])
+
+
+@irdl_op_definition
+class VerifWhileOp(IRDLOperation):
+    name = "verif.while"
+    cond_region = region_def()
+    body = region_def()
+
+    def __init__(self, cond_region: Region, body: Region):
+        super().__init__(regions=[cond_region, body])
+
+
 def _make_verif_binop(opname: str) -> type[IRDLOperation]:
     @irdl_op_definition
     class _Op(IRDLOperation):
@@ -275,38 +414,19 @@ VerifAndOp = _make_verif_binop("and")
 VerifOrOp = _make_verif_binop("or")
 
 VERIF_BIN_BY_KIND: dict[str, type[IRDLOperation]] = {
-    "add": VerifAddOp,
-    "sub": VerifSubOp,
-    "mul": VerifMulOp,
-    "floordiv": VerifFloorDivOp,
-    "mod": VerifModOp,
-    "eq": VerifEqOp,
-    "ne": VerifNeOp,
-    "lt": VerifLtOp,
-    "le": VerifLeOp,
-    "gt": VerifGtOp,
-    "ge": VerifGeOp,
-    "and": VerifAndOp,
-    "or": VerifOrOp,
+    "add": VerifAddOp, "sub": VerifSubOp, "mul": VerifMulOp,
+    "floordiv": VerifFloorDivOp, "mod": VerifModOp,
+    "eq": VerifEqOp, "ne": VerifNeOp,
+    "lt": VerifLtOp, "le": VerifLeOp, "gt": VerifGtOp, "ge": VerifGeOp,
+    "and": VerifAndOp, "or": VerifOrOp,
 }
 
-VERIF_BIN_SYMBOL: dict[type, str] = {
-    VerifAddOp: "+",
-    VerifSubOp: "-",
-    VerifMulOp: "*",
-    VerifFloorDivOp: "/",
-    VerifModOp: "%",
-    VerifEqOp: "==",
-    VerifNeOp: "!=",
-    VerifLtOp: "<",
-    VerifLeOp: "<=",
-    VerifGtOp: ">",
-    VerifGeOp: ">=",
-    VerifAndOp: "&&",
-    VerifOrOp: "||",
-}
-
-Verif = Dialect("verif", [VerifFuncOp, VerifConstantOp, VerifParamRefOp, VerifNegOp, VerifIfOp, VerifReturnOp, *VERIF_BIN_BY_KIND.values()], [])
+Verif = Dialect("verif", [
+    VerifYieldOp, VerifRequiresOp, VerifEnsuresOp, VerifInvariantOp, VerifDecreasesOp,
+    VerifFuncOp, VerifConstantOp, VerifParamRefOp, VerifNegOp, VerifIfOp, VerifReturnOp,
+    VerifAssignOp, VerifVarRefOp, VerifCallOp, VerifAssertOp, VerifWhileOp,
+    *VERIF_BIN_BY_KIND.values(),
+], [])
 
 
 #
@@ -316,22 +436,14 @@ Verif = Dialect("verif", [VerifFuncOp, VerifConstantOp, VerifParamRefOp, VerifNe
 i64 = IntegerType(64)
 i1 = IntegerType(1)
 
-ANNOTATION_RE = re.compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
+ANNOTATION_RE = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
 
 AST_OP: dict[type, tuple[str, IntegerType]] = {
-    ast.Eq: ("eq", i1),
-    ast.NotEq: ("ne", i1),
-    ast.Lt: ("lt", i1),
-    ast.LtE: ("le", i1),
-    ast.Gt: ("gt", i1),
-    ast.GtE: ("ge", i1),
-    ast.Add: ("add", i64),
-    ast.Sub: ("sub", i64),
-    ast.Mult: ("mul", i64),
-    ast.FloorDiv: ("floordiv", i64),
-    ast.Mod: ("mod", i64),
-    ast.And: ("and", i1),
-    ast.Or: ("or", i1),
+    ast.Eq: ("eq", i1), ast.NotEq: ("ne", i1),
+    ast.Lt: ("lt", i1), ast.LtE: ("le", i1), ast.Gt: ("gt", i1), ast.GtE: ("ge", i1),
+    ast.Add: ("add", i64), ast.Sub: ("sub", i64), ast.Mult: ("mul", i64),
+    ast.FloorDiv: ("floordiv", i64), ast.Mod: ("mod", i64),
+    ast.And: ("and", i1), ast.Or: ("or", i1),
 }
 
 
@@ -394,6 +506,16 @@ class PyASTVisitor(ast.NodeVisitor):
     def _err(self, node: ast.AST, msg: str) -> CodeGenerationException:
         return CodeGenerationException(self.file, getattr(node, "lineno", 0), getattr(node, "col_offset", 0), msg)
 
+    def _emit_spec_op(self, op_cls: type, spec_str: str) -> None:
+        saved = self.inserter.insertion_point
+        cond_block = Block()
+        self.inserter.set_insertion_point_from_block(cond_block)
+        expr_ast = ast.parse(spec_str, mode="eval").body
+        self.visit(expr_ast)
+        self.inserter.insert_op(YieldOp(self.inserter.get_operand()))
+        self.inserter.set_insertion_point_from_block(saved)
+        self.inserter.insert_op(op_cls(Region([cond_block])))
+
     def generic_visit(self, node: ast.AST) -> None:
         raise self._err(node, f"unsupported AST node: {ast.dump(node)}")
 
@@ -411,10 +533,14 @@ class PyASTVisitor(ast.NodeVisitor):
         self.locals_ = set()
 
         body_block = Block()
-        func_op = FuncOp(node.name, param_names, (param_types, return_type), requires=requires, ensures=ensures, body=Region([body_block]))
+        func_op = FuncOp(node.name, param_names, (param_types, return_type), body=Region([body_block]))
         saved = self.inserter.insertion_point
         self.inserter.insert_op(func_op)
         self.inserter.set_insertion_point_from_block(body_block)
+        for req in requires:
+            self._emit_spec_op(RequiresOp, req)
+        for ens in ensures:
+            self._emit_spec_op(EnsuresOp, ens)
         for s in node.body:
             if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant):
                 continue
@@ -530,16 +656,27 @@ class PyASTVisitor(ast.NodeVisitor):
         self.inserter.insert_op(AssertOp(self.inserter.get_operand()))
 
     def visit_While(self, node: ast.While) -> None:
-        invariants, decreases_list = _extract_loop_annotations(self.source, node)
         saved = self.inserter.insertion_point
 
-        body_region = Region([Block()])
-        self.inserter.set_insertion_point_from_region(body_region)
+        cond_block = Block()
+        self.inserter.set_insertion_point_from_block(cond_block)
+        self.visit(node.test)
+        self.inserter.insert_op(YieldOp(self.inserter.get_operand()))
+        cond_region = Region([cond_block])
+
+        body_block = Block()
+        self.inserter.set_insertion_point_from_block(body_block)
+        invariants, decreases_list = _extract_loop_annotations(self.source, node)
+        for inv_str in invariants:
+            self._emit_spec_op(InvariantOp, inv_str)
+        for dec_str in decreases_list:
+            self._emit_spec_op(DecreasesOp, dec_str)
         for s in node.body:
             self.visit(s)
+        body_region = Region([body_block])
 
         self.inserter.set_insertion_point_from_block(saved)
-        self.inserter.insert_op(WhileOp(ast.unparse(node.test), body_region, invariants=invariants, decreases=decreases_list))
+        self.inserter.insert_op(WhileOp(cond_region, body_region))
 
 
 def ingest(source: str, file: str | None = None) -> ModuleOp:
@@ -558,7 +695,7 @@ class _FuncRewrite(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: FuncOp, rewriter: PatternRewriter) -> None:
         new_body = rewriter.move_region_contents_to_new_regions(op.body)
-        rewriter.replace_matched_op(VerifFuncOp(op.sym_name.data, [n.data for n in op.param_names], op.function_type, requires=op.requires, ensures=op.ensures, body=new_body))
+        rewriter.replace_matched_op(VerifFuncOp(op.sym_name.data, [n.data for n in op.param_names], op.function_type, body=new_body))
 
 
 class _ConstantRewrite(RewritePattern):
@@ -600,15 +737,121 @@ class _BinOpRewrite(RewritePattern):
         rewriter.replace_matched_op(cls(op.lhs, op.rhs, op.result.type))
 
 
+class _YieldRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: YieldOp, rewriter: PatternRewriter) -> None:
+        rewriter.replace_matched_op(VerifYieldOp(op.value))
+
+
+class _RequiresRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: RequiresOp, rewriter: PatternRewriter) -> None:
+        new_region = rewriter.move_region_contents_to_new_regions(op.cond_region)
+        rewriter.replace_matched_op(VerifRequiresOp(new_region))
+
+
+class _EnsuresRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: EnsuresOp, rewriter: PatternRewriter) -> None:
+        new_region = rewriter.move_region_contents_to_new_regions(op.cond_region)
+        rewriter.replace_matched_op(VerifEnsuresOp(new_region))
+
+
+class _InvariantRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: InvariantOp, rewriter: PatternRewriter) -> None:
+        new_region = rewriter.move_region_contents_to_new_regions(op.cond_region)
+        rewriter.replace_matched_op(VerifInvariantOp(new_region))
+
+
+class _DecreasesRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: DecreasesOp, rewriter: PatternRewriter) -> None:
+        new_region = rewriter.move_region_contents_to_new_regions(op.expr_region)
+        rewriter.replace_matched_op(VerifDecreasesOp(new_region))
+
+
+class _AssignRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: AssignOp, rewriter: PatternRewriter) -> None:
+        rewriter.replace_matched_op(VerifAssignOp(op.var_name, op.is_decl, op.value))
+
+
+class _VarRefRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: VarRefOp, rewriter: PatternRewriter) -> None:
+        rewriter.replace_matched_op(VerifVarRefOp(op.var_name, op.result.type))
+
+
+class _CallRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter) -> None:
+        rewriter.replace_matched_op(VerifCallOp(op.callee, list(op.arguments), op.result.type))
+
+
+class _AssertRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: AssertOp, rewriter: PatternRewriter) -> None:
+        rewriter.replace_matched_op(VerifAssertOp(op.cond))
+
+
+class _WhileRewrite(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: WhileOp, rewriter: PatternRewriter) -> None:
+        new_cond = rewriter.move_region_contents_to_new_regions(op.cond_region)
+        new_body = rewriter.move_region_contents_to_new_regions(op.body)
+        rewriter.replace_matched_op(VerifWhileOp(new_cond, new_body))
+
+
 def resolve(module: ModuleOp) -> ModuleOp:
-    walker = PatternRewriteWalker(GreedyRewritePatternApplier([_FuncRewrite(), _ConstantRewrite(), _ParamRefRewrite(), _NegRewrite(), _ReturnRewrite(), _IfRewrite(), _BinOpRewrite()]))
+    walker = PatternRewriteWalker(GreedyRewritePatternApplier([
+        _FuncRewrite(), _ConstantRewrite(), _ParamRefRewrite(), _NegRewrite(),
+        _ReturnRewrite(), _IfRewrite(), _BinOpRewrite(),
+        _YieldRewrite(), _RequiresRewrite(), _EnsuresRewrite(),
+        _InvariantRewrite(), _DecreasesRewrite(),
+        _AssignRewrite(), _VarRefRewrite(), _CallRewrite(), _AssertRewrite(),
+        _WhileRewrite(),
+    ]))
     walker.rewrite_module(module)
     return module
 
 
+@dataclass(frozen=True)
+class ResolvePass(ModulePass):
+    name = "resolve"
+
+    def apply(self, ctx: Context, op: ModuleOp) -> None:
+        resolve(op)
+
+
 #
-# dafny dialect
+# dafny lowering
 #
+
+PREC_OR = 1
+PREC_AND = 2
+PREC_EQ = 3
+PREC_CMP = 4
+PREC_ADD = 5
+PREC_MUL = 6
+PREC_UNARY = 7
+PREC_ATOM = 8
+
+
+@dataclass
+class DfyExpr:
+    text: str
+    prec: int
+
+
+VERIF_BIN_INFO: dict[type, tuple[str, int]] = {
+    VerifOrOp: ("||", PREC_OR), VerifAndOp: ("&&", PREC_AND),
+    VerifEqOp: ("==", PREC_EQ), VerifNeOp: ("!=", PREC_EQ),
+    VerifLtOp: ("<", PREC_CMP), VerifLeOp: ("<=", PREC_CMP),
+    VerifGtOp: (">", PREC_CMP), VerifGeOp: (">=", PREC_CMP),
+    VerifAddOp: ("+", PREC_ADD), VerifSubOp: ("-", PREC_ADD),
+    VerifMulOp: ("*", PREC_MUL), VerifFloorDivOp: ("/", PREC_MUL), VerifModOp: ("%", PREC_MUL),
+}
 
 
 @dataclass
@@ -660,52 +903,76 @@ class DfyMethod:
     body: list
 
 
-def _rewrite_spec(clause: str) -> str:
-    return re.sub(r"\band\b", "&&", re.sub(r"\bor\b", "||", re.sub(r"\bresult\b", "r", clause)))
+def _lower_dfy_expr_region(region: Region) -> str:
+    exprs: dict[SSAValue, DfyExpr] = {}
+    _lower_dfy_ops(region.block.ops, exprs)
+    for op in region.block.ops:
+        if isinstance(op, VerifYieldOp):
+            return exprs[op.value].text
+    raise ValueError("region missing verif.yield")
 
 
-def _lower_dfy_ops(ops: Iterable[Operation], exprs: dict[SSAValue, str]) -> list:
+def _lower_dfy_ops(ops: Iterable[Operation], exprs: dict[SSAValue, DfyExpr]) -> list:
     stmts: list = []
     for op in ops:
-        if type(op) in VERIF_BIN_SYMBOL:
-            exprs[op.result] = f"{exprs[op.lhs]} {VERIF_BIN_SYMBOL[type(op)]} {exprs[op.rhs]}"
+        if type(op) in VERIF_BIN_INFO:
+            sym, prec = VERIF_BIN_INFO[type(op)]
+            l, r = exprs[op.lhs], exprs[op.rhs]
+            lt = f"({l.text})" if l.prec < prec else l.text
+            rt = f"({r.text})" if r.prec <= prec else r.text
+            exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
             continue
         match op:
             case VerifConstantOp():
                 if op.value.type.width.data == 1:
-                    exprs[op.result] = "true" if op.value.value.data else "false"
+                    text = "true" if op.value.value.data else "false"
                 else:
-                    exprs[op.result] = str(op.value.value.data)
+                    text = str(op.value.value.data)
+                exprs[op.result] = DfyExpr(text, PREC_ATOM)
             case VerifParamRefOp():
-                exprs[op.result] = op.param_name.data
-            case VarRefOp():
-                exprs[op.result] = op.var_name.data
+                name = op.param_name.data
+                if name == "result":
+                    name = "r"
+                exprs[op.result] = DfyExpr(name, PREC_ATOM)
+            case VerifVarRefOp():
+                exprs[op.result] = DfyExpr(op.var_name.data, PREC_ATOM)
             case VerifNegOp():
-                exprs[op.result] = f"-{exprs[op.operand]}"
-            case CallOp():
-                args = ", ".join(exprs[a] for a in op.arguments)
-                exprs[op.result] = f"{op.callee.data}({args})"
-            case AssignOp():
+                inner = exprs[op.operand]
+                text = f"-{inner.text}" if inner.prec >= PREC_UNARY else f"-({inner.text})"
+                exprs[op.result] = DfyExpr(text, PREC_UNARY)
+            case VerifCallOp():
+                args = ", ".join(exprs[a].text for a in op.arguments)
+                exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", PREC_ATOM)
+            case VerifAssignOp():
                 if op.is_decl.value.data:
-                    stmts.append(DfyVarDecl(op.var_name.data, exprs[op.value]))
+                    stmts.append(DfyVarDecl(op.var_name.data, exprs[op.value].text))
                 else:
-                    stmts.append(DfyAssign(op.var_name.data, exprs[op.value]))
-            case AssertOp():
-                stmts.append(DfyAssert(exprs[op.cond]))
+                    stmts.append(DfyAssign(op.var_name.data, exprs[op.value].text))
+            case VerifAssertOp():
+                stmts.append(DfyAssert(exprs[op.cond].text))
             case VerifReturnOp():
-                stmts.append(DfyReturn("r", exprs[op.value]))
+                stmts.append(DfyReturn("r", exprs[op.value].text))
             case VerifIfOp():
                 then_stmts = _lower_dfy_ops(op.then_region.block.ops, exprs)
                 else_stmts = _lower_dfy_ops(op.else_region.block.ops, exprs) if len(op.else_region.blocks) > 0 else []
-                stmts.append(DfyIf(exprs[op.cond], then_stmts, else_stmts))
-            case WhileOp():
-                body_stmts = _lower_dfy_ops(op.body.block.ops, exprs)
-                stmts.append(DfyWhile(
-                    _rewrite_spec(op.cond_text.data),
-                    [_rewrite_spec(inv.data) for inv in op.invariants],
-                    [_rewrite_spec(dec.data) for dec in op.decreases],
-                    body_stmts,
-                ))
+                stmts.append(DfyIf(exprs[op.cond].text, then_stmts, else_stmts))
+            case VerifWhileOp():
+                cond_str = _lower_dfy_expr_region(op.cond_region)
+                invariants = []
+                decreases_list = []
+                body_ops = []
+                for inner_op in op.body.block.ops:
+                    match inner_op:
+                        case VerifInvariantOp():
+                            invariants.append(_lower_dfy_expr_region(inner_op.cond_region))
+                        case VerifDecreasesOp():
+                            decreases_list.append(_lower_dfy_expr_region(inner_op.expr_region))
+                        case _:
+                            body_ops.append(inner_op)
+                body_stmts = _lower_dfy_ops(body_ops, exprs)
+                stmts.append(DfyWhile(cond_str, invariants, decreases_list, body_stmts))
+            case VerifYieldOp() | VerifRequiresOp() | VerifEnsuresOp():
+                pass
     return stmts
 
 
@@ -714,14 +981,25 @@ def _lower_dfy_func(func: VerifFuncOp) -> DfyMethod:
     param_types = list(func.function_type.inputs)
     params = [(name, "bool" if ty.width.data == 1 else "int") for name, ty in zip(param_names, param_types)]
     ret_type = list(func.function_type.outputs)[0]
-    exprs: dict[SSAValue, str] = {}
-    body = _lower_dfy_ops(func.body.block.ops, exprs)
+
+    requires = []
+    ensures = []
+    body_ops = []
+    for op in func.body.block.ops:
+        match op:
+            case VerifRequiresOp():
+                requires.append(_lower_dfy_expr_region(op.cond_region))
+            case VerifEnsuresOp():
+                ensures.append(_lower_dfy_expr_region(op.cond_region))
+            case _:
+                body_ops.append(op)
+
+    exprs: dict[SSAValue, DfyExpr] = {}
+    body = _lower_dfy_ops(body_ops, exprs)
     return DfyMethod(
         func.sym_name.data, params, "r",
         "bool" if ret_type.width.data == 1 else "int",
-        [_rewrite_spec(c.data) for c in func.requires],
-        [_rewrite_spec(c.data) for c in func.ensures],
-        body,
+        requires, ensures, body,
     )
 
 
@@ -778,34 +1056,73 @@ def print_dafny(module: ModuleOp) -> str:
 
 
 #
+# targets
+#
+
+
+@dataclass(frozen=True)
+class DafnyTarget(Target):
+    name = "dfy"
+
+    def emit(self, ctx: Context, module: ModuleOp, output: IO[str]) -> None:
+        output.write(print_dafny(module))
+        output.write("\n")
+
+
+#
 # cli
 #
 
 
-@click.command()
-@click.argument("file", type=click.Path(exists=True, path_type=Path))
-@click.option("--parsed", "fmt", flag_value="parsed", help="Print IR after parsing, before resolution")
-@click.option("--resolved", "fmt", flag_value="resolved", help="Print IR after name/type resolution")
-@click.option("--dafny", "fmt", flag_value="dafny", help="Print generated Dafny source")
-def cli(file: Path, fmt: str | None):
-    source = Path(file).read_text()
-    module = ingest(source)
-    if fmt == "parsed":
-        Printer().print(module)
-        return
-    resolve(module)
-    if fmt == "resolved":
-        Printer().print(module)
-        return
-    dfy = print_dafny(module)
-    if fmt == "dafny":
-        click.echo(dfy)
-        return
-    dfy_path = Path(file).with_suffix(".dfy")
-    dfy_path.write_text(dfy + "\n")
-    result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name], capture_output=True, text=True)
-    if result.stdout:
-        click.echo(result.stdout)
-    if result.stderr:
-        click.echo(result.stderr, err=True)
-    sys.exit(result.returncode)
+class VeriPyMain(xDSLOptMain):
+    def register_all_dialects(self):
+        self.ctx.register_dialect("py", lambda: Py)
+        self.ctx.register_dialect("verif", lambda: Verif)
+
+    def register_all_frontends(self):
+        super().register_all_frontends()
+
+        def parse_python(io: IO[str]):
+            return ingest(io.read(), self.get_input_name())
+
+        self.available_frontends["py"] = parse_python
+
+    def register_all_passes(self):
+        super().register_all_passes()
+        self.register_pass("resolve", lambda: ResolvePass)
+
+    def register_all_targets(self):
+        super().register_all_targets()
+        self.available_targets["dfy"] = lambda: DafnyTarget
+
+    def register_all_arguments(self, arg_parser: argparse.ArgumentParser):
+        super().register_all_arguments(arg_parser)
+        arg_parser.add_argument("--verify", default=False, action="store_true", help="Compile to Dafny and verify via Docker")
+
+    def apply_passes(self, prog: ModuleOp) -> bool:
+        self.pipeline.apply(self.ctx, prog)
+        return True
+
+    def run(self):
+        if not self.args.verify:
+            super().run()
+            return
+        chunks, ext = self.prepare_input()
+        for chunk, offset in chunks:
+            module = self.parse_chunk(chunk, ext, offset)
+            if module is None:
+                continue
+            ResolvePass().apply(self.ctx, module)
+            dfy = print_dafny(module)
+            dfy_path = Path(self.args.input_file).with_suffix(".dfy")
+            dfy_path.write_text(dfy + "\n")
+            result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name], capture_output=True, text=True)
+            if result.stdout:
+                print(result.stdout)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
+            sys.exit(result.returncode)
+
+
+def cli():
+    VeriPyMain(description="VeriPy: Python to Dafny verification compiler").run()

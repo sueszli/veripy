@@ -1,4 +1,4 @@
-# RUN: veripy --ir-py %s | filecheck %s
+# RUN: veripy %s | filecheck %s
 
 def f(a: int, b: int) -> int:
     return a + b
