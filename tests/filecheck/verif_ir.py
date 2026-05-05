@@ -1,4 +1,4 @@
-# RUN: veripy --ir %s | filecheck %s
+# RUN: veripy %s -p resolve | filecheck %s
 
 def f(a: int, b: int) -> int:
     if a >= b:

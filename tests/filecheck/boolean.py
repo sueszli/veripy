@@ -1,4 +1,4 @@
-# RUN: veripy --dfy %s | filecheck %s
+# RUN: veripy %s -p resolve -t dfy | filecheck %s
 
 def both(a: int, b: int) -> int:
     if a >= 0 and b >= 0:

@@ -1,4 +1,4 @@
-# RUN: veripy --dfy %s | filecheck %s
+# RUN: veripy %s -p resolve -t dfy | filecheck %s
 def forty_two() -> int:
     return 42
 # CHECK: method forty_two() returns (r: int)
