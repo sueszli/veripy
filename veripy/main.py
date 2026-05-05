@@ -7,34 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import click
-from xdsl.dialects.builtin import (
-    ArrayAttr,
-    FunctionType,
-    IntegerAttr,
-    IntegerType,
-    ModuleOp,
-    StringAttr,
-)
+from xdsl.dialects.builtin import ArrayAttr, FunctionType, IntegerAttr, IntegerType, ModuleOp, StringAttr
 from xdsl.frontend.pyast.utils.exceptions import CodeGenerationException
 from xdsl.frontend.pyast.utils.op_inserter import OpInserter
 from xdsl.ir import Block, Dialect, Operation, Region, SSAValue
-from xdsl.irdl import (
-    IRDLOperation,
-    irdl_op_definition,
-    operand_def,
-    prop_def,
-    region_def,
-    result_def,
-    traits_def,
-    var_operand_def,
-)
-from xdsl.pattern_rewriter import (
-    GreedyRewritePatternApplier,
-    PatternRewriter,
-    PatternRewriteWalker,
-    RewritePattern,
-    op_type_rewrite_pattern,
-)
+from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def, var_operand_def
+from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
 from xdsl.printer import Printer
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 
