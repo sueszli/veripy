@@ -17,7 +17,7 @@ from xdsl.utils.base_printer import BasePrinter
 from veripy.ops_py import AssertOp, AssignOp, BinOp, CallOp, ConstantOp, DecreasesOp, EnsuresOp, FuncOp, IfOp, InvariantOp, NegOp, ParamRefOp, RequiresOp, ReturnOp, VarRefOp, WhileOp, YieldOp
 
 #
-# ingestor
+# parser
 #
 
 def _resolve_type(ann: ast.expr | None) -> IntegerType:
@@ -64,7 +64,7 @@ def _extract_loop_annotations(source: str, node: ast.While) -> tuple[list[str], 
     return invariants, decreases_list
 
 
-class PyASTVisitor(ast.NodeVisitor):
+class Parser(ast.NodeVisitor):
     inserter: OpInserter
     source: str
     file: str | None
@@ -253,9 +253,9 @@ class PyASTVisitor(ast.NodeVisitor):
         self.inserter.insert_op(WhileOp(cond_region, body_region))
 
 
-def ingest(source: str, file: str | None = None) -> ModuleOp:
+def parse(source: str, file: str | None = None) -> ModuleOp:
     module = ModuleOp([])
-    visitor = PyASTVisitor(module, source, file)
+    visitor = Parser(module, source, file)
     visitor.visit(ast.parse(source))
     return module
 
@@ -414,7 +414,7 @@ class DafnyPrinter(BasePrinter):
 def cli(input, verify):
     source = sys.stdin.read() if input == "-" else open(input).read()
     buf = StringIO()
-    DafnyPrinter(buf).print_module(ingest(source, None if input == "-" else input))
+    DafnyPrinter(buf).print_module(parse(source, None if input == "-" else input))
     dfy = buf.getvalue()
 
     if not verify:
