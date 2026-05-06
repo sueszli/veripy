@@ -5,7 +5,6 @@ import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from io import StringIO
-from pathlib import Path
 from re import compile as re_compile
 from typing import IO
 
@@ -692,9 +691,7 @@ class VeriPyMain(xDSLOptMain):
             if module is None:
                 continue
             dfy = print_dafny(module)
-            dfy_path = Path(self.args.input_file).with_suffix(".dfy")
-            dfy_path.write_text(dfy + "\n")
-            result = subprocess.run(["docker", "run", "--rm", "-v", f"{dfy_path.parent}:/work", "-w", "/work", "veripy-dafny", "dafny", "verify", dfy_path.name], capture_output=True, text=True)
+            result = subprocess.run(["docker", "run", "--rm", "-i", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"], input=dfy + "\n", capture_output=True, text=True)
             if result.stdout:
                 print(result.stdout)
             if result.stderr:
