@@ -14,9 +14,6 @@ from xdsl.frontend.pyast.utils.exceptions import CodeGenerationException
 from xdsl.frontend.pyast.utils.op_inserter import OpInserter
 from xdsl.ir import Block, Dialect, Operation, Region, SSAValue
 from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def, var_operand_def
-from xdsl.passes import ModulePass
-from xdsl.pattern_rewriter import GreedyRewritePatternApplier, PatternRewriter, PatternRewriteWalker, RewritePattern, op_type_rewrite_pattern
-from xdsl.printer import Printer
 from xdsl.utils.target import Target
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 from xdsl.xdsl_opt_main import xDSLOptMain
@@ -208,225 +205,6 @@ class WhileOp(IRDLOperation):
 
 
 Py = Dialect("py", [YieldOp, RequiresOp, EnsuresOp, InvariantOp, DecreasesOp, FuncOp, ConstantOp, ParamRefOp, BinOp, NegOp, IfOp, ReturnOp, AssertOp, CallOp, AssignOp, VarRefOp, WhileOp], [])
-
-
-#
-# verif dialect
-#
-
-
-@irdl_op_definition
-class VerifYieldOp(IRDLOperation):
-    name = "verif.yield"
-    value = operand_def()
-    traits = traits_def(IsTerminator())
-
-    def __init__(self, value: SSAValue):
-        super().__init__(operands=[value])
-
-
-@irdl_op_definition
-class VerifRequiresOp(IRDLOperation):
-    name = "verif.requires"
-    cond_region = region_def()
-
-    def __init__(self, cond_region: Region):
-        super().__init__(regions=[cond_region])
-
-
-@irdl_op_definition
-class VerifEnsuresOp(IRDLOperation):
-    name = "verif.ensures"
-    cond_region = region_def()
-
-    def __init__(self, cond_region: Region):
-        super().__init__(regions=[cond_region])
-
-
-@irdl_op_definition
-class VerifInvariantOp(IRDLOperation):
-    name = "verif.invariant"
-    cond_region = region_def()
-
-    def __init__(self, cond_region: Region):
-        super().__init__(regions=[cond_region])
-
-
-@irdl_op_definition
-class VerifDecreasesOp(IRDLOperation):
-    name = "verif.decreases"
-    expr_region = region_def()
-
-    def __init__(self, expr_region: Region):
-        super().__init__(regions=[expr_region])
-
-
-@irdl_op_definition
-class VerifFuncOp(IRDLOperation):
-    name = "verif.func"
-    sym_name = prop_def(StringAttr)
-    function_type = prop_def(FunctionType)
-    param_names = prop_def(ArrayAttr[StringAttr])
-    body = region_def()
-    traits = traits_def(IsolatedFromAbove())
-
-    def __init__(self, func_name: str, param_names: Sequence[str], function_type: FunctionType, *, body: Region):
-        super().__init__(properties={"sym_name": StringAttr(func_name), "function_type": function_type, "param_names": ArrayAttr([StringAttr(n) for n in param_names])}, regions=[body])
-
-
-@irdl_op_definition
-class VerifConstantOp(IRDLOperation):
-    name = "verif.constant"
-    value = prop_def(IntegerAttr)
-    result = result_def()
-    traits = traits_def(Pure())
-
-    def __init__(self, value: IntegerAttr, result_type: IntegerType):
-        super().__init__(properties={"value": value}, result_types=[result_type])
-
-
-@irdl_op_definition
-class VerifParamRefOp(IRDLOperation):
-    name = "verif.param_ref"
-    param_name = prop_def(StringAttr)
-    result = result_def()
-    traits = traits_def(Pure())
-
-    def __init__(self, param_name: StringAttr, result_type: IntegerType):
-        super().__init__(properties={"param_name": param_name}, result_types=[result_type])
-
-
-@irdl_op_definition
-class VerifNegOp(IRDLOperation):
-    name = "verif.neg"
-    operand = operand_def()
-    result = result_def()
-    traits = traits_def(Pure())
-
-    def __init__(self, operand: SSAValue, result_type: IntegerType):
-        super().__init__(operands=[operand], result_types=[result_type])
-
-
-@irdl_op_definition
-class VerifIfOp(IRDLOperation):
-    name = "verif.if"
-    cond = operand_def(IntegerType(1))
-    then_region = region_def()
-    else_region = region_def()
-
-    def __init__(self, cond: SSAValue, then_region: Region, else_region: Region):
-        super().__init__(operands=[cond], regions=[then_region, else_region])
-
-
-@irdl_op_definition
-class VerifReturnOp(IRDLOperation):
-    name = "verif.return"
-    value = operand_def()
-    traits = traits_def(IsTerminator())
-
-    def __init__(self, value: SSAValue):
-        super().__init__(operands=[value])
-
-
-@irdl_op_definition
-class VerifAssignOp(IRDLOperation):
-    name = "verif.assign"
-    var_name = prop_def(StringAttr)
-    is_decl = prop_def(IntegerAttr)
-    value = operand_def()
-
-    def __init__(self, var_name: StringAttr, is_decl: IntegerAttr, value: SSAValue):
-        super().__init__(operands=[value], properties={"var_name": var_name, "is_decl": is_decl})
-
-
-@irdl_op_definition
-class VerifVarRefOp(IRDLOperation):
-    name = "verif.var_ref"
-    var_name = prop_def(StringAttr)
-    result = result_def()
-    traits = traits_def(Pure())
-
-    def __init__(self, var_name: StringAttr, result_type: IntegerType):
-        super().__init__(properties={"var_name": var_name}, result_types=[result_type])
-
-
-@irdl_op_definition
-class VerifCallOp(IRDLOperation):
-    name = "verif.call"
-    callee = prop_def(StringAttr)
-    arguments = var_operand_def()
-    result = result_def()
-    traits = traits_def(Pure())
-
-    def __init__(self, callee: StringAttr, arguments: Sequence[SSAValue], result_type: IntegerType):
-        super().__init__(operands=[arguments], properties={"callee": callee}, result_types=[result_type])
-
-
-@irdl_op_definition
-class VerifAssertOp(IRDLOperation):
-    name = "verif.assert"
-    cond = operand_def()
-
-    def __init__(self, cond: SSAValue):
-        super().__init__(operands=[cond])
-
-
-@irdl_op_definition
-class VerifWhileOp(IRDLOperation):
-    name = "verif.while"
-    cond_region = region_def()
-    body = region_def()
-
-    def __init__(self, cond_region: Region, body: Region):
-        super().__init__(regions=[cond_region, body])
-
-
-def _make_verif_binop(opname: str) -> type[IRDLOperation]:
-    @irdl_op_definition
-    class _Op(IRDLOperation):
-        name = f"verif.{opname}"
-        lhs = operand_def()
-        rhs = operand_def()
-        result = result_def()
-        traits = traits_def(Pure())
-
-        def __init__(self, lhs: SSAValue, rhs: SSAValue, result_type: IntegerType):
-            super().__init__(operands=[lhs, rhs], result_types=[result_type])
-
-    cls_name = "".join(p.capitalize() for p in opname.split("_")) + "Op"
-    _Op.__name__ = cls_name
-    _Op.__qualname__ = cls_name
-    return _Op
-
-
-VerifAddOp = _make_verif_binop("add")
-VerifSubOp = _make_verif_binop("sub")
-VerifMulOp = _make_verif_binop("mul")
-VerifFloorDivOp = _make_verif_binop("floordiv")
-VerifModOp = _make_verif_binop("mod")
-VerifEqOp = _make_verif_binop("eq")
-VerifNeOp = _make_verif_binop("ne")
-VerifLtOp = _make_verif_binop("lt")
-VerifLeOp = _make_verif_binop("le")
-VerifGtOp = _make_verif_binop("gt")
-VerifGeOp = _make_verif_binop("ge")
-VerifAndOp = _make_verif_binop("and")
-VerifOrOp = _make_verif_binop("or")
-
-VERIF_BIN_BY_KIND: dict[str, type[IRDLOperation]] = {
-    "add": VerifAddOp, "sub": VerifSubOp, "mul": VerifMulOp,
-    "floordiv": VerifFloorDivOp, "mod": VerifModOp,
-    "eq": VerifEqOp, "ne": VerifNeOp,
-    "lt": VerifLtOp, "le": VerifLeOp, "gt": VerifGtOp, "ge": VerifGeOp,
-    "and": VerifAndOp, "or": VerifOrOp,
-}
-
-Verif = Dialect("verif", [
-    VerifYieldOp, VerifRequiresOp, VerifEnsuresOp, VerifInvariantOp, VerifDecreasesOp,
-    VerifFuncOp, VerifConstantOp, VerifParamRefOp, VerifNegOp, VerifIfOp, VerifReturnOp,
-    VerifAssignOp, VerifVarRefOp, VerifCallOp, VerifAssertOp, VerifWhileOp,
-    *VERIF_BIN_BY_KIND.values(),
-], [])
 
 
 #
@@ -687,144 +465,6 @@ def ingest(source: str, file: str | None = None) -> ModuleOp:
 
 
 #
-# resolve pass: py -> verif
-#
-
-
-class _FuncRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: FuncOp, rewriter: PatternRewriter) -> None:
-        new_body = rewriter.move_region_contents_to_new_regions(op.body)
-        rewriter.replace_matched_op(VerifFuncOp(op.sym_name.data, [n.data for n in op.param_names], op.function_type, body=new_body))
-
-
-class _ConstantRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: ConstantOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifConstantOp(op.value, op.result.type))
-
-
-class _ParamRefRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: ParamRefOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifParamRefOp(op.param_name, op.result.type))
-
-
-class _NegRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: NegOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifNegOp(op.operand, op.result.type))
-
-
-class _ReturnRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: ReturnOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifReturnOp(op.value))
-
-
-class _IfRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: IfOp, rewriter: PatternRewriter) -> None:
-        new_then = rewriter.move_region_contents_to_new_regions(op.then_region)
-        new_else = rewriter.move_region_contents_to_new_regions(op.else_region)
-        rewriter.replace_matched_op(VerifIfOp(op.cond, new_then, new_else))
-
-
-class _BinOpRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: BinOp, rewriter: PatternRewriter) -> None:
-        cls = VERIF_BIN_BY_KIND[op.op_kind.data]
-        rewriter.replace_matched_op(cls(op.lhs, op.rhs, op.result.type))
-
-
-class _YieldRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: YieldOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifYieldOp(op.value))
-
-
-class _RequiresRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: RequiresOp, rewriter: PatternRewriter) -> None:
-        new_region = rewriter.move_region_contents_to_new_regions(op.cond_region)
-        rewriter.replace_matched_op(VerifRequiresOp(new_region))
-
-
-class _EnsuresRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: EnsuresOp, rewriter: PatternRewriter) -> None:
-        new_region = rewriter.move_region_contents_to_new_regions(op.cond_region)
-        rewriter.replace_matched_op(VerifEnsuresOp(new_region))
-
-
-class _InvariantRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: InvariantOp, rewriter: PatternRewriter) -> None:
-        new_region = rewriter.move_region_contents_to_new_regions(op.cond_region)
-        rewriter.replace_matched_op(VerifInvariantOp(new_region))
-
-
-class _DecreasesRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: DecreasesOp, rewriter: PatternRewriter) -> None:
-        new_region = rewriter.move_region_contents_to_new_regions(op.expr_region)
-        rewriter.replace_matched_op(VerifDecreasesOp(new_region))
-
-
-class _AssignRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: AssignOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifAssignOp(op.var_name, op.is_decl, op.value))
-
-
-class _VarRefRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: VarRefOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifVarRefOp(op.var_name, op.result.type))
-
-
-class _CallRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifCallOp(op.callee, list(op.arguments), op.result.type))
-
-
-class _AssertRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: AssertOp, rewriter: PatternRewriter) -> None:
-        rewriter.replace_matched_op(VerifAssertOp(op.cond))
-
-
-class _WhileRewrite(RewritePattern):
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: WhileOp, rewriter: PatternRewriter) -> None:
-        new_cond = rewriter.move_region_contents_to_new_regions(op.cond_region)
-        new_body = rewriter.move_region_contents_to_new_regions(op.body)
-        rewriter.replace_matched_op(VerifWhileOp(new_cond, new_body))
-
-
-def resolve(module: ModuleOp) -> ModuleOp:
-    walker = PatternRewriteWalker(GreedyRewritePatternApplier([
-        _FuncRewrite(), _ConstantRewrite(), _ParamRefRewrite(), _NegRewrite(),
-        _ReturnRewrite(), _IfRewrite(), _BinOpRewrite(),
-        _YieldRewrite(), _RequiresRewrite(), _EnsuresRewrite(),
-        _InvariantRewrite(), _DecreasesRewrite(),
-        _AssignRewrite(), _VarRefRewrite(), _CallRewrite(), _AssertRewrite(),
-        _WhileRewrite(),
-    ]))
-    walker.rewrite_module(module)
-    return module
-
-
-@dataclass(frozen=True)
-class ResolvePass(ModulePass):
-    name = "resolve"
-
-    def apply(self, ctx: Context, op: ModuleOp) -> None:
-        resolve(op)
-
-
-#
 # dafny lowering
 #
 
@@ -844,13 +484,13 @@ class DfyExpr:
     prec: int
 
 
-VERIF_BIN_INFO: dict[type, tuple[str, int]] = {
-    VerifOrOp: ("||", PREC_OR), VerifAndOp: ("&&", PREC_AND),
-    VerifEqOp: ("==", PREC_EQ), VerifNeOp: ("!=", PREC_EQ),
-    VerifLtOp: ("<", PREC_CMP), VerifLeOp: ("<=", PREC_CMP),
-    VerifGtOp: (">", PREC_CMP), VerifGeOp: (">=", PREC_CMP),
-    VerifAddOp: ("+", PREC_ADD), VerifSubOp: ("-", PREC_ADD),
-    VerifMulOp: ("*", PREC_MUL), VerifFloorDivOp: ("/", PREC_MUL), VerifModOp: ("%", PREC_MUL),
+BINOP_INFO: dict[str, tuple[str, int]] = {
+    "or": ("||", PREC_OR), "and": ("&&", PREC_AND),
+    "eq": ("==", PREC_EQ), "ne": ("!=", PREC_EQ),
+    "lt": ("<", PREC_CMP), "le": ("<=", PREC_CMP),
+    "gt": (">", PREC_CMP), "ge": (">=", PREC_CMP),
+    "add": ("+", PREC_ADD), "sub": ("-", PREC_ADD),
+    "mul": ("*", PREC_MUL), "floordiv": ("/", PREC_MUL), "mod": ("%", PREC_MUL),
 }
 
 
@@ -907,76 +547,76 @@ def _lower_dfy_expr_region(region: Region) -> str:
     exprs: dict[SSAValue, DfyExpr] = {}
     _lower_dfy_ops(region.block.ops, exprs)
     for op in region.block.ops:
-        if isinstance(op, VerifYieldOp):
+        if isinstance(op, YieldOp):
             return exprs[op.value].text
-    raise ValueError("region missing verif.yield")
+    raise ValueError("region missing py.yield")
 
 
 def _lower_dfy_ops(ops: Iterable[Operation], exprs: dict[SSAValue, DfyExpr]) -> list:
     stmts: list = []
     for op in ops:
-        if type(op) in VERIF_BIN_INFO:
-            sym, prec = VERIF_BIN_INFO[type(op)]
-            l, r = exprs[op.lhs], exprs[op.rhs]
-            lt = f"({l.text})" if l.prec < prec else l.text
-            rt = f"({r.text})" if r.prec <= prec else r.text
-            exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
-            continue
         match op:
-            case VerifConstantOp():
+            case BinOp():
+                kind = op.op_kind.data
+                sym, prec = BINOP_INFO[kind]
+                l, r = exprs[op.lhs], exprs[op.rhs]
+                lt = f"({l.text})" if l.prec < prec else l.text
+                rt = f"({r.text})" if r.prec <= prec else r.text
+                exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
+            case ConstantOp():
                 if op.value.type.width.data == 1:
                     text = "true" if op.value.value.data else "false"
                 else:
                     text = str(op.value.value.data)
                 exprs[op.result] = DfyExpr(text, PREC_ATOM)
-            case VerifParamRefOp():
+            case ParamRefOp():
                 name = op.param_name.data
                 if name == "result":
                     name = "r"
                 exprs[op.result] = DfyExpr(name, PREC_ATOM)
-            case VerifVarRefOp():
+            case VarRefOp():
                 exprs[op.result] = DfyExpr(op.var_name.data, PREC_ATOM)
-            case VerifNegOp():
+            case NegOp():
                 inner = exprs[op.operand]
                 text = f"-{inner.text}" if inner.prec >= PREC_UNARY else f"-({inner.text})"
                 exprs[op.result] = DfyExpr(text, PREC_UNARY)
-            case VerifCallOp():
+            case CallOp():
                 args = ", ".join(exprs[a].text for a in op.arguments)
                 exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", PREC_ATOM)
-            case VerifAssignOp():
+            case AssignOp():
                 if op.is_decl.value.data:
                     stmts.append(DfyVarDecl(op.var_name.data, exprs[op.value].text))
                 else:
                     stmts.append(DfyAssign(op.var_name.data, exprs[op.value].text))
-            case VerifAssertOp():
+            case AssertOp():
                 stmts.append(DfyAssert(exprs[op.cond].text))
-            case VerifReturnOp():
+            case ReturnOp():
                 stmts.append(DfyReturn("r", exprs[op.value].text))
-            case VerifIfOp():
+            case IfOp():
                 then_stmts = _lower_dfy_ops(op.then_region.block.ops, exprs)
                 else_stmts = _lower_dfy_ops(op.else_region.block.ops, exprs) if len(op.else_region.blocks) > 0 else []
                 stmts.append(DfyIf(exprs[op.cond].text, then_stmts, else_stmts))
-            case VerifWhileOp():
+            case WhileOp():
                 cond_str = _lower_dfy_expr_region(op.cond_region)
                 invariants = []
                 decreases_list = []
                 body_ops = []
                 for inner_op in op.body.block.ops:
                     match inner_op:
-                        case VerifInvariantOp():
+                        case InvariantOp():
                             invariants.append(_lower_dfy_expr_region(inner_op.cond_region))
-                        case VerifDecreasesOp():
+                        case DecreasesOp():
                             decreases_list.append(_lower_dfy_expr_region(inner_op.expr_region))
                         case _:
                             body_ops.append(inner_op)
                 body_stmts = _lower_dfy_ops(body_ops, exprs)
                 stmts.append(DfyWhile(cond_str, invariants, decreases_list, body_stmts))
-            case VerifYieldOp() | VerifRequiresOp() | VerifEnsuresOp():
+            case YieldOp() | RequiresOp() | EnsuresOp():
                 pass
     return stmts
 
 
-def _lower_dfy_func(func: VerifFuncOp) -> DfyMethod:
+def _lower_dfy_func(func: FuncOp) -> DfyMethod:
     param_names = [attr.data for attr in func.param_names]
     param_types = list(func.function_type.inputs)
     params = [(name, "bool" if ty.width.data == 1 else "int") for name, ty in zip(param_names, param_types)]
@@ -987,9 +627,9 @@ def _lower_dfy_func(func: VerifFuncOp) -> DfyMethod:
     body_ops = []
     for op in func.body.block.ops:
         match op:
-            case VerifRequiresOp():
+            case RequiresOp():
                 requires.append(_lower_dfy_expr_region(op.cond_region))
-            case VerifEnsuresOp():
+            case EnsuresOp():
                 ensures.append(_lower_dfy_expr_region(op.cond_region))
             case _:
                 body_ops.append(op)
@@ -1004,7 +644,7 @@ def _lower_dfy_func(func: VerifFuncOp) -> DfyMethod:
 
 
 def lower_to_dafny(module: ModuleOp) -> list[DfyMethod]:
-    return [_lower_dfy_func(op) for op in module.body.block.ops if isinstance(op, VerifFuncOp)]
+    return [_lower_dfy_func(op) for op in module.body.block.ops if isinstance(op, FuncOp)]
 
 
 def _fmt_dfy_stmts(stmts: list, indent: str) -> list[str]:
@@ -1077,7 +717,6 @@ class DafnyTarget(Target):
 class VeriPyMain(xDSLOptMain):
     def register_all_dialects(self):
         self.ctx.register_dialect("py", lambda: Py)
-        self.ctx.register_dialect("verif", lambda: Verif)
 
     def register_all_frontends(self):
         super().register_all_frontends()
@@ -1087,17 +726,13 @@ class VeriPyMain(xDSLOptMain):
 
         self.available_frontends["py"] = parse_python
 
-    def register_all_passes(self):
-        super().register_all_passes()
-        self.register_pass("resolve", lambda: ResolvePass)
-
     def register_all_targets(self):
         super().register_all_targets()
         self.available_targets["dfy"] = lambda: DafnyTarget
 
     def register_all_arguments(self, arg_parser: argparse.ArgumentParser):
         super().register_all_arguments(arg_parser)
-        arg_parser.set_defaults(passes="resolve", target="dfy")
+        arg_parser.set_defaults(target="dfy")
         arg_parser.add_argument("--verify", default=False, action="store_true", help="Compile to Dafny and verify via Docker")
 
     def apply_passes(self, prog: ModuleOp) -> bool:
@@ -1113,7 +748,6 @@ class VeriPyMain(xDSLOptMain):
             module = self.parse_chunk(chunk, ext, offset)
             if module is None:
                 continue
-            ResolvePass().apply(self.ctx, module)
             dfy = print_dafny(module)
             dfy_path = Path(self.args.input_file).with_suffix(".dfy")
             dfy_path.write_text(dfy + "\n")

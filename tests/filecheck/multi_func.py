@@ -1,4 +1,4 @@
-# RUN: veripy %s -p resolve -t dfy | filecheck %s
+# RUN: veripy %s -t dfy | filecheck %s
 
 def f() -> int:
     return 1

@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 dependencies = ["xdsl==0.63.0"]
 
 [tool.uv]
-dev-dependencies = ["pytest==9.0.3", "lit==18.1.8", "filecheck==1.0.3"]
+dev-dependencies = ["lit==18.1.8", "filecheck==1.0.3"]
 
 [project.scripts]
 veripy = "veripy.main:cli"
