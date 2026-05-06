@@ -11,5 +11,6 @@ fmt:
 
 .PHONY: test
 test: fmt
+	uv run pyright
 	uv run pytest tests/
 	uv run lit tests/filecheck/

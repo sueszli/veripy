@@ -8,7 +8,7 @@ dependencies = [
 ]
 
 [tool.uv]
-dev-dependencies = ["lit==18.1.8", "filecheck==1.0.3"]
+dev-dependencies = ["lit==18.1.8", "filecheck==1.0.3", "pyright==1.1.409"]
 
 [project.scripts]
 veripy = "veripy.main:cli"
@@ -19,3 +19,15 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 namespaces = true
+
+[tool.pyright]
+enableExperimentalFeatures = true
+enableTypeIgnoreComments = false
+reportAssertAlwaysTrue = true
+reportImportCycles = false
+reportMissingModuleSource = false
+reportUnnecessaryCast = true
+reportUnnecessaryIsInstance = true
+reportUnnecessaryTypeIgnoreComment = true
+typeCheckingMode = "strict"
+include = ["veripy"]

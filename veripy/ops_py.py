@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
 from xdsl.dialects.builtin import ArrayAttr, FunctionType, IntegerAttr, IntegerType, StringAttr
-from xdsl.ir import Dialect, Operation, Region, SSAValue
+from xdsl.ir import Attribute, Dialect, Operation, Region, SSAValue
 from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def, var_operand_def
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 
@@ -66,7 +66,7 @@ class FuncOp(IRDLOperation):
     body = region_def()
     traits = traits_def(IsolatedFromAbove())
 
-    def __init__(self, func_name: str, param_names: Sequence[str], function_type: tuple[Sequence, Sequence] | FunctionType, *, body: Region | None = None):
+    def __init__(self, func_name: str, param_names: Sequence[str], function_type: tuple[Sequence[Attribute], Sequence[Attribute]] | FunctionType, *, body: Region | None = None):
         if isinstance(function_type, tuple):
             function_type = FunctionType.from_lists(*function_type)
         super().__init__(properties={"sym_name": StringAttr(func_name), "function_type": function_type, "param_names": ArrayAttr([StringAttr(n) for n in param_names])}, regions=[body if body is not None else Region()])

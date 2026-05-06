@@ -17,32 +17,25 @@ from xdsl.utils.base_printer import BasePrinter
 from veripy.ops_py import AssertOp, AssignOp, BinOp, CallOp, ConstantOp, DecreasesOp, EnsuresOp, FuncOp, IfOp, InvariantOp, NegOp, ParamRefOp, RequiresOp, ReturnOp, VarRefOp, WhileOp, YieldOp
 
 #
-# ingestor
+# parser
 #
-
-i64 = IntegerType(64)
-i1 = IntegerType(1)
-
-ANNOTATION_RE = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
-
-AST_OP: dict[type, tuple[str, IntegerType]] = {ast.Eq: ("eq", i1), ast.NotEq: ("ne", i1), ast.Lt: ("lt", i1), ast.LtE: ("le", i1), ast.Gt: ("gt", i1), ast.GtE: ("ge", i1), ast.Add: ("add", i64), ast.Sub: ("sub", i64), ast.Mult: ("mul", i64), ast.FloorDiv: ("floordiv", i64), ast.Mod: ("mod", i64), ast.And: ("and", i1), ast.Or: ("or", i1)}
-
 
 def _resolve_type(ann: ast.expr | None) -> IntegerType:
     match ann:
         case ast.Name(id="bool"):
-            return i1
+            return IntegerType(1)
         case _:
-            return i64
+            return IntegerType(64)
 
 
 def _extract_annotations(source: str, func_node: ast.FunctionDef) -> tuple[list[str], list[str]]:
+    annotation_re = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
     lines = source.splitlines()
     requires: list[str] = []
     ensures: list[str] = []
     for lineno in range(func_node.lineno, func_node.end_lineno or func_node.lineno + 1):
         line = lines[lineno - 1] if lineno <= len(lines) else ""
-        m = ANNOTATION_RE.match(line)
+        m = annotation_re.match(line)
         if not m:
             continue
         keyword, expr = m.group(1), m.group(2)
@@ -54,12 +47,13 @@ def _extract_annotations(source: str, func_node: ast.FunctionDef) -> tuple[list[
 
 
 def _extract_loop_annotations(source: str, node: ast.While) -> tuple[list[str], list[str]]:
+    annotation_re = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
     lines = source.splitlines()
     invariants: list[str] = []
     decreases_list: list[str] = []
     for lineno in range(node.lineno, node.end_lineno or node.lineno + 1):
         line = lines[lineno - 1] if lineno <= len(lines) else ""
-        m = ANNOTATION_RE.match(line)
+        m = annotation_re.match(line)
         if not m:
             continue
         keyword, expr = m.group(1), m.group(2)
@@ -70,7 +64,7 @@ def _extract_loop_annotations(source: str, node: ast.While) -> tuple[list[str], 
     return invariants, decreases_list
 
 
-class PyASTVisitor(ast.NodeVisitor):
+class Parser(ast.NodeVisitor):
     inserter: OpInserter
     source: str
     file: str | None
@@ -131,58 +125,61 @@ class PyASTVisitor(ast.NodeVisitor):
     def visit_Constant(self, node: ast.Constant) -> None:
         match node.value:
             case bool() as v:
-                self.inserter.insert_op(ConstantOp(1 if v else 0, i1))
+                self.inserter.insert_op(ConstantOp(1 if v else 0, IntegerType(1)))
             case int() as v:
-                self.inserter.insert_op(ConstantOp(v, i64))
+                self.inserter.insert_op(ConstantOp(v, IntegerType(64)))
             case _:
                 raise self._err(node, f"unsupported constant: {node.value!r}")
 
     def visit_Name(self, node: ast.Name) -> None:
         if node.id in self.locals_:
-            self.inserter.insert_op(VarRefOp(node.id, self.scope.get(node.id, i64)))
+            self.inserter.insert_op(VarRefOp(node.id, self.scope.get(node.id, IntegerType(64))))
         else:
-            self.inserter.insert_op(ParamRefOp(node.id, self.scope.get(node.id, i64)))
+            self.inserter.insert_op(ParamRefOp(node.id, self.scope.get(node.id, IntegerType(64))))
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> None:
         if not isinstance(node.op, ast.USub):
             raise self._err(node, f"unsupported unary op: {type(node.op).__name__}")
         self.visit(node.operand)
-        self.inserter.insert_op(NegOp(self.inserter.get_operand(), i64))
+        self.inserter.insert_op(NegOp(self.inserter.get_operand(), IntegerType(64)))
 
     def visit_BinOp(self, node: ast.BinOp) -> None:
+        ast_op: dict[type[ast.operator], tuple[str, IntegerType]] = {ast.Add: ("add", IntegerType(64)), ast.Sub: ("sub", IntegerType(64)), ast.Mult: ("mul", IntegerType(64)), ast.FloorDiv: ("floordiv", IntegerType(64)), ast.Mod: ("mod", IntegerType(64))}
         self.visit(node.left)
         lhs = self.inserter.get_operand()
         self.visit(node.right)
         rhs = self.inserter.get_operand()
-        s, ty = AST_OP[type(node.op)]
+        s, ty = ast_op[type(node.op)]
         self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
 
     def visit_Compare(self, node: ast.Compare) -> None:
+        ast_op: dict[type[ast.cmpop], tuple[str, IntegerType]] = {ast.Eq: ("eq", IntegerType(1)), ast.NotEq: ("ne", IntegerType(1)), ast.Lt: ("lt", IntegerType(1)), ast.LtE: ("le", IntegerType(1)), ast.Gt: ("gt", IntegerType(1)), ast.GtE: ("ge", IntegerType(1))}
         if len(node.ops) != 1 or len(node.comparators) != 1:
             raise self._err(node, "only single comparisons supported")
         self.visit(node.left)
         lhs = self.inserter.get_operand()
         self.visit(node.comparators[0])
         rhs = self.inserter.get_operand()
-        s, ty = AST_OP[type(node.ops[0])]
+        s, ty = ast_op[type(node.ops[0])]
         self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
 
     def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        ast_op: dict[type[ast.boolop], tuple[str, IntegerType]] = {ast.And: ("and", IntegerType(1)), ast.Or: ("or", IntegerType(1))}
         self.visit(node.values[0])
         lhs = self.inserter.get_operand()
         self.visit(node.values[1])
         rhs = self.inserter.get_operand()
-        s, ty = AST_OP[type(node.op)]
+        s, ty = ast_op[type(node.op)]
         self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
 
     def visit_Call(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):
             raise self._err(node, "only simple function calls supported")
-        args = []
+        args: list[SSAValue] = []
         for a in node.args:
             self.visit(a)
             args.append(self.inserter.get_operand())
-        self.inserter.insert_op(CallOp(node.func.id, args, i64))
+        self.inserter.insert_op(CallOp(node.func.id, args, IntegerType(64)))
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
@@ -192,7 +189,7 @@ class PyASTVisitor(ast.NodeVisitor):
         val = self.inserter.get_operand()
         is_decl = name not in self.locals_ and name not in self.scope
         self.inserter.insert_op(AssignOp(name, val, is_decl))
-        self.scope[name] = i64
+        self.scope[name] = IntegerType(64)
         self.locals_.add(name)
 
     def visit_Return(self, node: ast.Return) -> None:
@@ -256,9 +253,9 @@ class PyASTVisitor(ast.NodeVisitor):
         self.inserter.insert_op(WhileOp(cond_region, body_region))
 
 
-def ingest(source: str, file: str | None = None) -> ModuleOp:
+def parse(source: str, file: str | None = None) -> ModuleOp:
     module = ModuleOp([])
-    visitor = PyASTVisitor(module, source, file)
+    visitor = Parser(module, source, file)
     visitor.visit(ast.parse(source))
     return module
 
@@ -267,23 +264,10 @@ def ingest(source: str, file: str | None = None) -> ModuleOp:
 # dafny lowering
 #
 
-PREC_OR = 1
-PREC_AND = 2
-PREC_EQ = 3
-PREC_CMP = 4
-PREC_ADD = 5
-PREC_MUL = 6
-PREC_UNARY = 7
-PREC_ATOM = 8
-
-
 @dataclass
 class DfyExpr:
     text: str
     prec: int
-
-
-BINOP_INFO: dict[str, tuple[str, int]] = {"or": ("||", PREC_OR), "and": ("&&", PREC_AND), "eq": ("==", PREC_EQ), "ne": ("!=", PREC_EQ), "lt": ("<", PREC_CMP), "le": ("<=", PREC_CMP), "gt": (">", PREC_CMP), "ge": (">=", PREC_CMP), "add": ("+", PREC_ADD), "sub": ("-", PREC_ADD), "mul": ("*", PREC_MUL), "floordiv": ("/", PREC_MUL), "mod": ("%", PREC_MUL)}
 
 
 class DafnyPrinter(BasePrinter):
@@ -306,9 +290,9 @@ class DafnyPrinter(BasePrinter):
         self.exprs = {}
         param_names = [attr.data for attr in func.param_names]
         param_types = list(func.function_type.inputs)
-        params = ", ".join(f"{name}: {'bool' if ty.width.data == 1 else 'int'}" for name, ty in zip(param_names, param_types))
-        ret_type = list(func.function_type.outputs)[0]
-        ret_type_str = "bool" if ret_type.width.data == 1 else "int"
+        params = ", ".join(f"{name}: {'bool' if ty == IntegerType(1) else 'int'}" for name, ty in zip(param_names, param_types))
+        ret_attr = list(func.function_type.outputs)[0]
+        ret_type_str = "bool" if ret_attr == IntegerType(1) else "int"
 
         self.print_string(f"method {func.sym_name.data}({params}) returns (r: {ret_type_str})")
 
@@ -328,34 +312,36 @@ class DafnyPrinter(BasePrinter):
         self.print_string("\n}")
 
     def _eval_expr_op(self, op: Operation) -> None:
+        binop_info = {"or": ("||", 1), "and": ("&&", 2), "eq": ("==", 3), "ne": ("!=", 3), "lt": ("<", 4), "le": ("<=", 4), "gt": (">", 4), "ge": (">=", 4), "add": ("+", 5), "sub": ("-", 5), "mul": ("*", 6), "floordiv": ("/", 6), "mod": ("%", 6)}
         match op:
             case BinOp():
-                kind = op.op_kind.data
-                sym, prec = BINOP_INFO[kind]
+                sym, prec = binop_info[op.op_kind.data]
                 l, r = self.exprs[op.lhs], self.exprs[op.rhs]
                 lt = f"({l.text})" if l.prec < prec else l.text
                 rt = f"({r.text})" if r.prec <= prec else r.text
                 self.exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
             case ConstantOp():
-                if op.value.type.width.data == 1:
+                if op.value.type == IntegerType(1):
                     text = "true" if op.value.value.data else "false"
                 else:
                     text = str(op.value.value.data)
-                self.exprs[op.result] = DfyExpr(text, PREC_ATOM)
+                self.exprs[op.result] = DfyExpr(text, 8)
             case ParamRefOp():
                 name = op.param_name.data
                 if name == "result":
                     name = "r"
-                self.exprs[op.result] = DfyExpr(name, PREC_ATOM)
+                self.exprs[op.result] = DfyExpr(name, 8)
             case VarRefOp():
-                self.exprs[op.result] = DfyExpr(op.var_name.data, PREC_ATOM)
+                self.exprs[op.result] = DfyExpr(op.var_name.data, 8)
             case NegOp():
                 inner = self.exprs[op.operand]
-                text = f"-{inner.text}" if inner.prec >= PREC_UNARY else f"-({inner.text})"
-                self.exprs[op.result] = DfyExpr(text, PREC_UNARY)
+                text = f"-{inner.text}" if inner.prec >= 7 else f"-({inner.text})"
+                self.exprs[op.result] = DfyExpr(text, 7)
             case CallOp():
                 args = ", ".join(self.exprs[a].text for a in op.arguments)
-                self.exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", PREC_ATOM)
+                self.exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", 8)
+            case _:
+                pass
 
     def _emit_stmt(self, op: Operation) -> None:
         match op:
@@ -400,6 +386,8 @@ class DafnyPrinter(BasePrinter):
                 with self.indented():
                     self._emit_ops(body_ops)
                 self.print_string("\n}")
+            case _:
+                pass
 
     def _eval_region(self, region: Region) -> str:
         for op in region.block.ops:
@@ -427,22 +415,17 @@ class DafnyPrinter(BasePrinter):
 @click.command()
 @click.argument("input", default="-")
 @click.option("--verify", is_flag=True, help="Compile to Dafny and verify via Docker")
-def cli(input, verify):
+def cli(input: str, verify: bool) -> None:
     source = sys.stdin.read() if input == "-" else open(input).read()
-    module = ingest(source, input if input != "-" else None)
-
     buf = StringIO()
-    DafnyPrinter(buf).print_module(module)
+    DafnyPrinter(buf).print_module(parse(source, None if input == "-" else input))
     dfy = buf.getvalue()
 
     if not verify:
         print(dfy)
         return
 
-    result = subprocess.run(
-        ["docker", "run", "--rm", "-i", "--platform", "linux/amd64", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"],
-        input=dfy + "\n", capture_output=True, text=True
-    )
+    result = subprocess.run(["docker", "run", "--rm", "-i", "--platform", "linux/amd64", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"], input=dfy + "\n", capture_output=True, text=True)
     if result.stdout:
         print(result.stdout)
     if result.stderr:
