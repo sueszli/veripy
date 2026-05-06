@@ -1,4 +1,4 @@
-# RUN: veripy %s -t dfy | filecheck %s
+# RUN: veripy %s | filecheck %s
 
 def one_arg(x: int) -> int:
     return g(x)

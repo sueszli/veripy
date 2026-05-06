@@ -1,4 +1,4 @@
-# RUN: veripy %s -t dfy | filecheck %s
+# RUN: veripy %s | filecheck %s
 def max(a: int, b: int) -> int:
     #@ ensures result >= a
     #@ ensures result >= b
