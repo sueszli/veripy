@@ -4,6 +4,7 @@ import subprocess
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from re import compile as re_compile
 from typing import IO
@@ -14,6 +15,7 @@ from xdsl.frontend.pyast.utils.exceptions import CodeGenerationException
 from xdsl.frontend.pyast.utils.op_inserter import OpInserter
 from xdsl.ir import Block, Dialect, Operation, Region, SSAValue
 from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, prop_def, region_def, result_def, traits_def, var_operand_def
+from xdsl.utils.base_printer import BasePrinter
 from xdsl.utils.target import Target
 from xdsl.traits import IsolatedFromAbove, IsTerminator, Pure
 from xdsl.xdsl_opt_main import xDSLOptMain
@@ -494,205 +496,146 @@ BINOP_INFO: dict[str, tuple[str, int]] = {
 }
 
 
-@dataclass
-class DfyVarDecl:
-    name: str
-    expr: str
+class DafnyPrinter(BasePrinter):
+    exprs: dict[SSAValue, DfyExpr]
 
+    def __init__(self, stream: IO[str] | None = None):
+        super().__init__(stream)
+        self.exprs = {}
 
-@dataclass
-class DfyAssign:
-    name: str
-    expr: str
+    def print_module(self, module: ModuleOp) -> None:
+        first = True
+        for op in module.body.block.ops:
+            if isinstance(op, FuncOp):
+                if not first:
+                    self.print_string("\n")
+                self.print_func(op)
+                first = False
 
+    def print_func(self, func: FuncOp) -> None:
+        self.exprs = {}
+        param_names = [attr.data for attr in func.param_names]
+        param_types = list(func.function_type.inputs)
+        params = ", ".join(
+            f"{name}: {'bool' if ty.width.data == 1 else 'int'}"
+            for name, ty in zip(param_names, param_types)
+        )
+        ret_type = list(func.function_type.outputs)[0]
+        ret_type_str = "bool" if ret_type.width.data == 1 else "int"
 
-@dataclass
-class DfyAssert:
-    expr: str
+        self.print_string(f"method {func.sym_name.data}({params}) returns (r: {ret_type_str})")
 
+        body_ops: list[Operation] = []
+        for op in func.body.block.ops:
+            match op:
+                case RequiresOp():
+                    self.print_string(f"\n  requires {self._eval_region(op.cond_region)}")
+                case EnsuresOp():
+                    self.print_string(f"\n  ensures {self._eval_region(op.cond_region)}")
+                case _:
+                    body_ops.append(op)
 
-@dataclass
-class DfyReturn:
-    ret_var: str
-    expr: str
+        self.print_string("\n{")
+        with self.indented():
+            self._emit_ops(body_ops)
+        self.print_string("\n}")
 
-
-@dataclass
-class DfyIf:
-    cond: str
-    then_body: list
-    else_body: list
-
-
-@dataclass
-class DfyWhile:
-    cond: str
-    invariants: list
-    decreases: list
-    body: list
-
-
-@dataclass
-class DfyMethod:
-    name: str
-    params: list
-    ret_var: str
-    ret_type: str
-    requires: list
-    ensures: list
-    body: list
-
-
-def _lower_dfy_expr_region(region: Region) -> str:
-    exprs: dict[SSAValue, DfyExpr] = {}
-    _lower_dfy_ops(region.block.ops, exprs)
-    for op in region.block.ops:
-        if isinstance(op, YieldOp):
-            return exprs[op.value].text
-    raise ValueError("region missing py.yield")
-
-
-def _lower_dfy_ops(ops: Iterable[Operation], exprs: dict[SSAValue, DfyExpr]) -> list:
-    stmts: list = []
-    for op in ops:
+    def _eval_expr_op(self, op: Operation) -> None:
         match op:
             case BinOp():
                 kind = op.op_kind.data
                 sym, prec = BINOP_INFO[kind]
-                l, r = exprs[op.lhs], exprs[op.rhs]
+                l, r = self.exprs[op.lhs], self.exprs[op.rhs]
                 lt = f"({l.text})" if l.prec < prec else l.text
                 rt = f"({r.text})" if r.prec <= prec else r.text
-                exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
+                self.exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
             case ConstantOp():
                 if op.value.type.width.data == 1:
                     text = "true" if op.value.value.data else "false"
                 else:
                     text = str(op.value.value.data)
-                exprs[op.result] = DfyExpr(text, PREC_ATOM)
+                self.exprs[op.result] = DfyExpr(text, PREC_ATOM)
             case ParamRefOp():
                 name = op.param_name.data
                 if name == "result":
                     name = "r"
-                exprs[op.result] = DfyExpr(name, PREC_ATOM)
+                self.exprs[op.result] = DfyExpr(name, PREC_ATOM)
             case VarRefOp():
-                exprs[op.result] = DfyExpr(op.var_name.data, PREC_ATOM)
+                self.exprs[op.result] = DfyExpr(op.var_name.data, PREC_ATOM)
             case NegOp():
-                inner = exprs[op.operand]
+                inner = self.exprs[op.operand]
                 text = f"-{inner.text}" if inner.prec >= PREC_UNARY else f"-({inner.text})"
-                exprs[op.result] = DfyExpr(text, PREC_UNARY)
+                self.exprs[op.result] = DfyExpr(text, PREC_UNARY)
             case CallOp():
-                args = ", ".join(exprs[a].text for a in op.arguments)
-                exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", PREC_ATOM)
+                args = ", ".join(self.exprs[a].text for a in op.arguments)
+                self.exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", PREC_ATOM)
+
+    def _emit_stmt(self, op: Operation) -> None:
+        match op:
             case AssignOp():
+                expr = self.exprs[op.value].text
                 if op.is_decl.value.data:
-                    stmts.append(DfyVarDecl(op.var_name.data, exprs[op.value].text))
+                    self.print_string(f"\nvar {op.var_name.data} := {expr};")
                 else:
-                    stmts.append(DfyAssign(op.var_name.data, exprs[op.value].text))
+                    self.print_string(f"\n{op.var_name.data} := {expr};")
             case AssertOp():
-                stmts.append(DfyAssert(exprs[op.cond].text))
+                self.print_string(f"\nassert {self.exprs[op.cond].text};")
             case ReturnOp():
-                stmts.append(DfyReturn("r", exprs[op.value].text))
+                self.print_string(f"\nr := {self.exprs[op.value].text};")
+                self.print_string("\nreturn;")
             case IfOp():
-                then_stmts = _lower_dfy_ops(op.then_region.block.ops, exprs)
-                else_stmts = _lower_dfy_ops(op.else_region.block.ops, exprs) if len(op.else_region.blocks) > 0 else []
-                stmts.append(DfyIf(exprs[op.cond].text, then_stmts, else_stmts))
+                self.print_string(f"\nif {self.exprs[op.cond].text} {{")
+                with self.indented():
+                    self._emit_ops(op.then_region.block.ops)
+                self.print_string("\n}")
+                if len(op.else_region.blocks) > 0:
+                    self._emit_ops(op.else_region.block.ops)
             case WhileOp():
-                cond_str = _lower_dfy_expr_region(op.cond_region)
-                invariants = []
-                decreases_list = []
-                body_ops = []
+                cond = self._eval_region(op.cond_region)
+                invariants: list[str] = []
+                decreases_list: list[str] = []
+                body_ops: list[Operation] = []
                 for inner_op in op.body.block.ops:
                     match inner_op:
                         case InvariantOp():
-                            invariants.append(_lower_dfy_expr_region(inner_op.cond_region))
+                            invariants.append(self._eval_region(inner_op.cond_region))
                         case DecreasesOp():
-                            decreases_list.append(_lower_dfy_expr_region(inner_op.expr_region))
+                            decreases_list.append(self._eval_region(inner_op.expr_region))
                         case _:
                             body_ops.append(inner_op)
-                body_stmts = _lower_dfy_ops(body_ops, exprs)
-                stmts.append(DfyWhile(cond_str, invariants, decreases_list, body_stmts))
-            case YieldOp() | RequiresOp() | EnsuresOp():
+                self.print_string(f"\nwhile {cond}")
+                with self.indented():
+                    for inv in invariants:
+                        self.print_string(f"\ninvariant {inv}")
+                    for dec in decreases_list:
+                        self.print_string(f"\ndecreases {dec}")
+                self.print_string("\n{")
+                with self.indented():
+                    self._emit_ops(body_ops)
+                self.print_string("\n}")
+
+    def _eval_region(self, region: Region) -> str:
+        for op in region.block.ops:
+            if op.results:
+                self._eval_expr_op(op)
+            elif isinstance(op, YieldOp):
+                return self.exprs[op.value].text
+        raise ValueError("region missing py.yield")
+
+    def _emit_ops(self, ops: Iterable[Operation]) -> None:
+        for op in ops:
+            if op.results:
+                self._eval_expr_op(op)
+            elif isinstance(op, (YieldOp, RequiresOp, EnsuresOp)):
                 pass
-    return stmts
-
-
-def _lower_dfy_func(func: FuncOp) -> DfyMethod:
-    param_names = [attr.data for attr in func.param_names]
-    param_types = list(func.function_type.inputs)
-    params = [(name, "bool" if ty.width.data == 1 else "int") for name, ty in zip(param_names, param_types)]
-    ret_type = list(func.function_type.outputs)[0]
-
-    requires = []
-    ensures = []
-    body_ops = []
-    for op in func.body.block.ops:
-        match op:
-            case RequiresOp():
-                requires.append(_lower_dfy_expr_region(op.cond_region))
-            case EnsuresOp():
-                ensures.append(_lower_dfy_expr_region(op.cond_region))
-            case _:
-                body_ops.append(op)
-
-    exprs: dict[SSAValue, DfyExpr] = {}
-    body = _lower_dfy_ops(body_ops, exprs)
-    return DfyMethod(
-        func.sym_name.data, params, "r",
-        "bool" if ret_type.width.data == 1 else "int",
-        requires, ensures, body,
-    )
-
-
-def lower_to_dafny(module: ModuleOp) -> list[DfyMethod]:
-    return [_lower_dfy_func(op) for op in module.body.block.ops if isinstance(op, FuncOp)]
-
-
-def _fmt_dfy_stmts(stmts: list, indent: str) -> list[str]:
-    lines: list[str] = []
-    for stmt in stmts:
-        match stmt:
-            case DfyVarDecl(name, expr):
-                lines.append(f"{indent}var {name} := {expr};")
-            case DfyAssign(name, expr):
-                lines.append(f"{indent}{name} := {expr};")
-            case DfyAssert(expr):
-                lines.append(f"{indent}assert {expr};")
-            case DfyReturn(ret_var, expr):
-                lines.append(f"{indent}{ret_var} := {expr};")
-                lines.append(f"{indent}return;")
-            case DfyIf(cond, then_body, else_body):
-                lines.append(f"{indent}if {cond} {{")
-                lines.extend(_fmt_dfy_stmts(then_body, indent + "  "))
-                lines.append(f"{indent}}}")
-                if else_body:
-                    lines.extend(_fmt_dfy_stmts(else_body, indent))
-            case DfyWhile(cond, invariants, decreases, body):
-                lines.append(f"{indent}while {cond}")
-                for inv in invariants:
-                    lines.append(f"{indent}  invariant {inv}")
-                for dec in decreases:
-                    lines.append(f"{indent}  decreases {dec}")
-                lines.append(f"{indent}{{")
-                lines.extend(_fmt_dfy_stmts(body, indent + "  "))
-                lines.append(f"{indent}}}")
-    return lines
-
-
-def _fmt_dfy_method(m: DfyMethod) -> str:
-    params = ", ".join(f"{n}: {t}" for n, t in m.params)
-    lines = [f"method {m.name}({params}) returns ({m.ret_var}: {m.ret_type})"]
-    for r in m.requires:
-        lines.append(f"  requires {r}")
-    for e in m.ensures:
-        lines.append(f"  ensures {e}")
-    lines.append("{")
-    lines.extend(_fmt_dfy_stmts(m.body, "  "))
-    lines.append("}")
-    return "\n".join(lines)
+            else:
+                self._emit_stmt(op)
 
 
 def print_dafny(module: ModuleOp) -> str:
-    return "\n".join(_fmt_dfy_method(m) for m in lower_to_dafny(module))
+    output = StringIO()
+    DafnyPrinter(output).print_module(module)
+    return output.getvalue()
 
 
 #
@@ -705,7 +648,7 @@ class DafnyTarget(Target):
     name = "dfy"
 
     def emit(self, ctx: Context, module: ModuleOp, output: IO[str]) -> None:
-        output.write(print_dafny(module))
+        DafnyPrinter(output).print_module(module)
         output.write("\n")
 
 
