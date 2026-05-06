@@ -144,7 +144,7 @@ class Parser(ast.NodeVisitor):
         self.inserter.insert_op(NegOp(self.inserter.get_operand(), IntegerType(64)))
 
     def visit_BinOp(self, node: ast.BinOp) -> None:
-        ast_op = {ast.Add: ("add", IntegerType(64)), ast.Sub: ("sub", IntegerType(64)), ast.Mult: ("mul", IntegerType(64)), ast.FloorDiv: ("floordiv", IntegerType(64)), ast.Mod: ("mod", IntegerType(64))}
+        ast_op: dict[type[ast.operator], tuple[str, IntegerType]] = {ast.Add: ("add", IntegerType(64)), ast.Sub: ("sub", IntegerType(64)), ast.Mult: ("mul", IntegerType(64)), ast.FloorDiv: ("floordiv", IntegerType(64)), ast.Mod: ("mod", IntegerType(64))}
         self.visit(node.left)
         lhs = self.inserter.get_operand()
         self.visit(node.right)
@@ -153,7 +153,7 @@ class Parser(ast.NodeVisitor):
         self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
 
     def visit_Compare(self, node: ast.Compare) -> None:
-        ast_op = {ast.Eq: ("eq", IntegerType(1)), ast.NotEq: ("ne", IntegerType(1)), ast.Lt: ("lt", IntegerType(1)), ast.LtE: ("le", IntegerType(1)), ast.Gt: ("gt", IntegerType(1)), ast.GtE: ("ge", IntegerType(1))}
+        ast_op: dict[type[ast.cmpop], tuple[str, IntegerType]] = {ast.Eq: ("eq", IntegerType(1)), ast.NotEq: ("ne", IntegerType(1)), ast.Lt: ("lt", IntegerType(1)), ast.LtE: ("le", IntegerType(1)), ast.Gt: ("gt", IntegerType(1)), ast.GtE: ("ge", IntegerType(1))}
         if len(node.ops) != 1 or len(node.comparators) != 1:
             raise self._err(node, "only single comparisons supported")
         self.visit(node.left)
@@ -164,7 +164,7 @@ class Parser(ast.NodeVisitor):
         self.inserter.insert_op(BinOp(s, lhs, rhs, ty))
 
     def visit_BoolOp(self, node: ast.BoolOp) -> None:
-        ast_op = {ast.And: ("and", IntegerType(1)), ast.Or: ("or", IntegerType(1))}
+        ast_op: dict[type[ast.boolop], tuple[str, IntegerType]] = {ast.And: ("and", IntegerType(1)), ast.Or: ("or", IntegerType(1))}
         self.visit(node.values[0])
         lhs = self.inserter.get_operand()
         self.visit(node.values[1])
@@ -175,7 +175,7 @@ class Parser(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):
             raise self._err(node, "only simple function calls supported")
-        args = []
+        args: list[SSAValue] = []
         for a in node.args:
             self.visit(a)
             args.append(self.inserter.get_operand())
@@ -290,9 +290,9 @@ class DafnyPrinter(BasePrinter):
         self.exprs = {}
         param_names = [attr.data for attr in func.param_names]
         param_types = list(func.function_type.inputs)
-        params = ", ".join(f"{name}: {'bool' if ty.width.data == 1 else 'int'}" for name, ty in zip(param_names, param_types))
-        ret_type = list(func.function_type.outputs)[0]
-        ret_type_str = "bool" if ret_type.width.data == 1 else "int"
+        params = ", ".join(f"{name}: {'bool' if ty == IntegerType(1) else 'int'}" for name, ty in zip(param_names, param_types))
+        ret_attr = list(func.function_type.outputs)[0]
+        ret_type_str = "bool" if ret_attr == IntegerType(1) else "int"
 
         self.print_string(f"method {func.sym_name.data}({params}) returns (r: {ret_type_str})")
 
@@ -321,7 +321,7 @@ class DafnyPrinter(BasePrinter):
                 rt = f"({r.text})" if r.prec <= prec else r.text
                 self.exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
             case ConstantOp():
-                if op.value.type.width.data == 1:
+                if op.value.type == IntegerType(1):
                     text = "true" if op.value.value.data else "false"
                 else:
                     text = str(op.value.value.data)
@@ -340,6 +340,8 @@ class DafnyPrinter(BasePrinter):
             case CallOp():
                 args = ", ".join(self.exprs[a].text for a in op.arguments)
                 self.exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", 8)
+            case _:
+                pass
 
     def _emit_stmt(self, op: Operation) -> None:
         match op:
@@ -384,6 +386,8 @@ class DafnyPrinter(BasePrinter):
                 with self.indented():
                     self._emit_ops(body_ops)
                 self.print_string("\n}")
+            case _:
+                pass
 
     def _eval_region(self, region: Region) -> str:
         for op in region.block.ops:
@@ -411,7 +415,7 @@ class DafnyPrinter(BasePrinter):
 @click.command()
 @click.argument("input", default="-")
 @click.option("--verify", is_flag=True, help="Compile to Dafny and verify via Docker")
-def cli(input, verify):
+def cli(input: str, verify: bool) -> None:
     source = sys.stdin.read() if input == "-" else open(input).read()
     buf = StringIO()
     DafnyPrinter(buf).print_module(parse(source, None if input == "-" else input))
