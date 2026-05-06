@@ -131,8 +131,6 @@ class PyASTVisitor(ast.NodeVisitor):
             self.visit(s)
         self.inserter.set_insertion_point_from_block(saved)
 
-    # -- expressions --
-
     def visit_Constant(self, node: ast.Constant) -> None:
         match node.value:
             case bool() as v:
@@ -188,8 +186,6 @@ class PyASTVisitor(ast.NodeVisitor):
             self.visit(a)
             args.append(self.inserter.get_operand())
         self.inserter.insert_op(CallOp(node.func.id, args, i64))
-
-    # -- statements --
 
     def visit_Assign(self, node: ast.Assign) -> None:
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
