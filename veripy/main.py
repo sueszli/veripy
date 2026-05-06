@@ -2,7 +2,7 @@ import ast
 import subprocess
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass
+
 from io import StringIO
 from re import compile as re_compile
 from typing import IO
@@ -16,9 +16,6 @@ from xdsl.utils.base_printer import BasePrinter
 
 from veripy.ops_py import AssertOp, AssignOp, BinOp, CallOp, ConstantOp, DecreasesOp, EnsuresOp, FuncOp, IfOp, InvariantOp, NegOp, ParamRefOp, RequiresOp, ReturnOp, VarRefOp, WhileOp, YieldOp
 
-#
-# parser
-#
 
 class Parser(ast.NodeVisitor):
     inserter: OpInserter
@@ -230,18 +227,9 @@ class Parser(ast.NodeVisitor):
         return module
 
 
-#
-# dafny lowering
-#
-
-@dataclass
-class DfyExpr:
-    text: str
-    prec: int
-
 
 class DafnyPrinter(BasePrinter):
-    exprs: dict[SSAValue, DfyExpr]
+    exprs: dict[SSAValue, tuple[str, int]]
 
     def __init__(self, stream: IO[str] | None = None):
         super().__init__(stream)
@@ -286,48 +274,48 @@ class DafnyPrinter(BasePrinter):
         match op:
             case BinOp():
                 sym, prec = binop_info[op.op_kind.data]
-                l, r = self.exprs[op.lhs], self.exprs[op.rhs]
-                lt = f"({l.text})" if l.prec < prec else l.text
-                rt = f"({r.text})" if r.prec <= prec else r.text
-                self.exprs[op.result] = DfyExpr(f"{lt} {sym} {rt}", prec)
+                (lt, lp), (rt, rp) = self.exprs[op.lhs], self.exprs[op.rhs]
+                lt = f"({lt})" if lp < prec else lt
+                rt = f"({rt})" if rp <= prec else rt
+                self.exprs[op.result] = (f"{lt} {sym} {rt}", prec)
             case ConstantOp():
                 if op.value.type == IntegerType(1):
                     text = "true" if op.value.value.data else "false"
                 else:
                     text = str(op.value.value.data)
-                self.exprs[op.result] = DfyExpr(text, 8)
+                self.exprs[op.result] = (text, 8)
             case ParamRefOp():
                 name = op.param_name.data
                 if name == "result":
                     name = "r"
-                self.exprs[op.result] = DfyExpr(name, 8)
+                self.exprs[op.result] = (name, 8)
             case VarRefOp():
-                self.exprs[op.result] = DfyExpr(op.var_name.data, 8)
+                self.exprs[op.result] = (op.var_name.data, 8)
             case NegOp():
-                inner = self.exprs[op.operand]
-                text = f"-{inner.text}" if inner.prec >= 7 else f"-({inner.text})"
-                self.exprs[op.result] = DfyExpr(text, 7)
+                inner_text, inner_prec = self.exprs[op.operand]
+                text = f"-{inner_text}" if inner_prec >= 7 else f"-({inner_text})"
+                self.exprs[op.result] = (text, 7)
             case CallOp():
-                args = ", ".join(self.exprs[a].text for a in op.arguments)
-                self.exprs[op.result] = DfyExpr(f"{op.callee.data}({args})", 8)
+                args = ", ".join(self.exprs[a][0] for a in op.arguments)
+                self.exprs[op.result] = (f"{op.callee.data}({args})", 8)
             case _:
                 pass
 
     def _emit_stmt(self, op: Operation) -> None:
         match op:
             case AssignOp():
-                expr = self.exprs[op.value].text
+                expr = self.exprs[op.value][0]
                 if op.is_decl.value.data:
                     self.print_string(f"\nvar {op.var_name.data} := {expr};")
                 else:
                     self.print_string(f"\n{op.var_name.data} := {expr};")
             case AssertOp():
-                self.print_string(f"\nassert {self.exprs[op.cond].text};")
+                self.print_string(f"\nassert {self.exprs[op.cond][0]};")
             case ReturnOp():
-                self.print_string(f"\nr := {self.exprs[op.value].text};")
+                self.print_string(f"\nr := {self.exprs[op.value][0]};")
                 self.print_string("\nreturn;")
             case IfOp():
-                self.print_string(f"\nif {self.exprs[op.cond].text} {{")
+                self.print_string(f"\nif {self.exprs[op.cond][0]} {{")
                 with self.indented():
                     self._emit_ops(op.then_region.block.ops)
                 self.print_string("\n}")
@@ -364,7 +352,7 @@ class DafnyPrinter(BasePrinter):
             if op.results:
                 self._eval_expr_op(op)
             elif isinstance(op, YieldOp):
-                return self.exprs[op.value].text
+                return self.exprs[op.value][0]
         raise ValueError("region missing py.yield")
 
     def _emit_ops(self, ops: Iterable[Operation]) -> None:
@@ -376,10 +364,6 @@ class DafnyPrinter(BasePrinter):
             else:
                 self._emit_stmt(op)
 
-
-#
-# cli
-#
 
 
 @click.command()
