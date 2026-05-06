@@ -20,50 +20,6 @@ from veripy.ops_py import AssertOp, AssignOp, BinOp, CallOp, ConstantOp, Decreas
 # parser
 #
 
-def _resolve_type(ann: ast.expr | None) -> IntegerType:
-    match ann:
-        case ast.Name(id="bool"):
-            return IntegerType(1)
-        case _:
-            return IntegerType(64)
-
-
-def _extract_annotations(source: str, func_node: ast.FunctionDef) -> tuple[list[str], list[str]]:
-    annotation_re = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
-    lines = source.splitlines()
-    requires: list[str] = []
-    ensures: list[str] = []
-    for lineno in range(func_node.lineno, func_node.end_lineno or func_node.lineno + 1):
-        line = lines[lineno - 1] if lineno <= len(lines) else ""
-        m = annotation_re.match(line)
-        if not m:
-            continue
-        keyword, expr = m.group(1), m.group(2)
-        if keyword == "requires":
-            requires.append(expr)
-        elif keyword == "ensures":
-            ensures.append(expr)
-    return requires, ensures
-
-
-def _extract_loop_annotations(source: str, node: ast.While) -> tuple[list[str], list[str]]:
-    annotation_re = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
-    lines = source.splitlines()
-    invariants: list[str] = []
-    decreases_list: list[str] = []
-    for lineno in range(node.lineno, node.end_lineno or node.lineno + 1):
-        line = lines[lineno - 1] if lineno <= len(lines) else ""
-        m = annotation_re.match(line)
-        if not m:
-            continue
-        keyword, expr = m.group(1), m.group(2)
-        if keyword == "invariant":
-            invariants.append(expr)
-        elif keyword == "decreases":
-            decreases_list.append(expr)
-    return invariants, decreases_list
-
-
 class Parser(ast.NodeVisitor):
     inserter: OpInserter
     source: str
@@ -77,6 +33,20 @@ class Parser(ast.NodeVisitor):
         self.scope = {}
         self.locals_ = set()
         self.inserter = OpInserter(module.body.block)
+
+    def _extract_annotations(self, node: ast.stmt, keywords: set[str]) -> dict[str, list[str]]:
+        annotation_re = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
+        lines = self.source.splitlines()
+        result: dict[str, list[str]] = {k: [] for k in keywords}
+        for lineno in range(node.lineno, node.end_lineno or node.lineno + 1):
+            line = lines[lineno - 1] if lineno <= len(lines) else ""
+            m = annotation_re.match(line)
+            if not m:
+                continue
+            keyword, expr = m.group(1), m.group(2)
+            if keyword in result:
+                result[keyword].append(expr)
+        return result
 
     def _err(self, node: ast.AST, msg: str) -> CodeGenerationException:
         return CodeGenerationException(self.file, getattr(node, "lineno", 0), getattr(node, "col_offset", 0), msg)
@@ -100,10 +70,10 @@ class Parser(ast.NodeVisitor):
                 self.visit(child)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        requires, ensures = _extract_annotations(self.source, node)
+        anns = self._extract_annotations(node, {"requires", "ensures"})
         param_names = [arg.arg for arg in node.args.args]
-        param_types = [_resolve_type(arg.annotation) for arg in node.args.args]
-        return_type = [_resolve_type(node.returns)] if node.returns else []
+        param_types = [IntegerType(1) if isinstance(a.annotation, ast.Name) and a.annotation.id == "bool" else IntegerType(64) for a in node.args.args]
+        return_type = [IntegerType(1) if isinstance(node.returns, ast.Name) and node.returns.id == "bool" else IntegerType(64)] if node.returns else []
         self.scope = dict(zip(param_names, param_types))
         self.locals_ = set()
 
@@ -112,9 +82,9 @@ class Parser(ast.NodeVisitor):
         saved = self.inserter.insertion_point
         self.inserter.insert_op(func_op)
         self.inserter.set_insertion_point_from_block(body_block)
-        for req in requires:
+        for req in anns["requires"]:
             self._emit_spec_op(RequiresOp, req)
-        for ens in ensures:
+        for ens in anns["ensures"]:
             self._emit_spec_op(EnsuresOp, ens)
         for s in node.body:
             if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant):
@@ -240,10 +210,10 @@ class Parser(ast.NodeVisitor):
 
         body_block = Block()
         self.inserter.set_insertion_point_from_block(body_block)
-        invariants, decreases_list = _extract_loop_annotations(self.source, node)
-        for inv_str in invariants:
+        anns = self._extract_annotations(node, {"invariant", "decreases"})
+        for inv_str in anns["invariant"]:
             self._emit_spec_op(InvariantOp, inv_str)
-        for dec_str in decreases_list:
+        for dec_str in anns["decreases"]:
             self._emit_spec_op(DecreasesOp, dec_str)
         for s in node.body:
             self.visit(s)
@@ -252,12 +222,12 @@ class Parser(ast.NodeVisitor):
         self.inserter.set_insertion_point_from_block(saved)
         self.inserter.insert_op(WhileOp(cond_region, body_region))
 
-
-def parse(source: str, file: str | None = None) -> ModuleOp:
-    module = ModuleOp([])
-    visitor = Parser(module, source, file)
-    visitor.visit(ast.parse(source))
-    return module
+    @staticmethod
+    def parse(source: str, file: str | None = None) -> ModuleOp:
+        module = ModuleOp([])
+        visitor = Parser(module, source, file)
+        visitor.visit(ast.parse(source))
+        return module
 
 
 #
@@ -418,7 +388,7 @@ class DafnyPrinter(BasePrinter):
 def cli(input: str, verify: bool) -> None:
     source = sys.stdin.read() if input == "-" else open(input).read()
     buf = StringIO()
-    DafnyPrinter(buf).print_module(parse(source, None if input == "-" else input))
+    DafnyPrinter(buf).print_module(Parser.parse(source, None if input == "-" else input))
     dfy = buf.getvalue()
 
     if not verify:
