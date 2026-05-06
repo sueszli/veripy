@@ -39,6 +39,7 @@ References
 - xDSL: https://github.com/xdslproject/xdsl
 - Dafny: https://github.com/dafny-lang/dafny
 - Lean 4: https://github.com/leanprover/lean4
+- Strata (Python → SMT via Lean 4): https://github.com/strata-org/Strata
 
 
 Credit
