@@ -1,0 +1,44 @@
+MVP (done)
+  abs function end-to-end: ingest, resolve, dafny print, verify
+  py dialect: FuncOp, ConstantOp, ParamRefOp, VarRefOp, AssignOp, IfOp, ReturnOp, BinOp, NegOp
+  verif dialect: explicit binary ops, same control flow and spec ops
+  ingestor: ast.parse + #@ annotation extraction
+  resolve pass: py -> verif via pattern rewriting
+  dafny printer: verif -> .dfy text
+  CLI: read .py, emit .dfy, shell to dafny verify via docker
+  while loops with invariant/decreases
+  assert statements
+  function calls
+  assignments and local variables
+
+next slices (each closes one new example)
+  linear search: for loops, list indexing, len()
+  collections: list[T], set[T], dict[K,V], sequences/multisets in specs
+  resolve pass: purity classification via call graph, type checking
+  tagged unions: dataclass + Literal, match statements, narrowing
+  Lean backend: printer, four-file workflow (.types.lean, .def.lean, .spec.lean, .proof.lean)
+  regen: additions-only diff so LLM can't rewrite specs
+
+type system
+  str support
+  T | None (optional narrowing)
+  tuple unpacking
+  return type inference
+  comparison chaining (a < b < c)
+
+spec language
+  forall / exists quantifiers
+  implication (==>)
+  old() for postconditions
+  ghost variables and pure annotations
+  havoc
+
+LLM proof loop
+  run verifier, parse errors, feed to LLM
+  additions-only constraint on LLM output
+  retry budget and backoff
+
+infrastructure
+  drop docker requirement for dafny (native install path)
+  CI with dafny verification
+  split main.py once it outgrows single-file
