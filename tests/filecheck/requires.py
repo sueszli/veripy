@@ -1,4 +1,4 @@
-# RUN: veripy %s -p resolve -t dfy | filecheck %s
+# RUN: veripy %s -t dfy | filecheck %s
 
 def add_nonneg(a: int, b: int) -> int:
     #@ requires a >= 0
