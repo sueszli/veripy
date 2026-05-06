@@ -1,38 +1,17 @@
 VeriPy
 ======
 
-An xDSL-based vericoding toolchain for Python. Python source with #@ requires/ensures/invariant/decreases annotations gets lowered through typed xDSL dialects to Dafny or Lean 4. The verifier discharges what it can; an LLM closes the rest. The vericoding pattern is from LemmaScript (https://github.com/midspiral/LemmaScript, which targets TypeScript); VeriPy applies it to Python and replaces the ad-hoc TypeScript IR with a typed multi-dialect IR so that adding a backend is a printer, not a rewrite of the pipeline.
+xDSL-based vericoding toolchain for Python. Annotate Python with #@ specs,
+lower through typed IR to Dafny (or Lean 4), verify, and let an LLM close
+whatever the solver can't.
 
-Pipeline
---------
-
-   foo.py (with #@ specs)
-        |
-        v
-   ast.parse + #@ extraction
-        |
-        v
-   py dialect (xDSL)
-        |
-        v
-   rewrite passes  --> verif dialect (xDSL)
-        |
-   +----+----+
-   v         v
-   Dafny   Lean
-   printer printer
-        |
-        v
-   dafny verify / lake build
-        |
-        v
-   PASS, or error -> LLM adds proof, retry
+The vericoding pattern and annotation design come from LemmaScript
+(https://github.com/midspiral/LemmaScript) which targets TypeScript.
+VeriPy applies it to Python with a multi-dialect xDSL IR.
 
 
-The MVP
+Example
 -------
-
-One vertical slice end to end on the smallest Python function:
 
     def abs(x: int) -> int:
         #@ ensures result >= 0
@@ -41,48 +20,22 @@ One vertical slice end to end on the smallest Python function:
             return x
         return -x
 
-No loops, no collections, no resolve phase, no Lean, no regen. Z3 closes it instantly. Around 300 lines of Python including the parser, since ast is stdlib.
+    $ veripy example/example.py
+    $ veripy example/example.py --verify
 
 
-Tasks
------
+Pipeline
+--------
 
-(1) py dialect with FuncOp (requires/ensures as attributes), ConstantOp, ParamRefOp, IfOp, ReturnOp, BinOp, NegOp. (2) Ingestor: ast.parse for structure, source lines for #@ annotations matched by line number. (3) Dafny printer walking the IR. (4) CLI: read foo.py, emit foo.dfy, shell to dafny verify. (5) End-to-end test asserting exit zero.
-
-Post-MVP slices, each closing one new example: linear search (loops), resolve pass (purity, types), tagged unions via dataclass + Literal (state machine, packet dispatch, match), Lean backend, regen with additions-only diff.
-
-
-What to imitate from LemmaScript
---------------------------------
-
-LemmaScript's pipeline is the reference architecture. It runs four phases (extract, resolve, transform, emit) plus auxiliary passes (narrow, peephole). VeriPy imitates the phase structure but reifies each phase as either a dialect (`py`, `verif`) or an xDSL pass.
-
-The annotation grammar is a near-direct port. SPEC.md section 2 (https://github.com/midspiral/LemmaScript/blob/main/SPEC.md) lists every keyword (requires, ensures, invariant, decreases, pure, ghost, assert, havoc, verify, declare-type, backend) and section 2.2 gives the spec expression grammar with `\result`, `forall`, `exists`, implication. VeriPy uses `#@` instead of `//@` and `result` instead of `\result` (no backslash needed since Python has no syntactic conflict). Everything else in section 2 maps over. For the spec expression evaluator (parsing the part that follows the keyword) the LemmaScript grammar can be ported verbatim.
-
-The translation tables in SPEC section 3 (operator mapping, special forms, method dispatch) are the lowering spec. For Python the table needs adaptation in obvious places (`len(x)` instead of `x.length`, slicing `x[a:b]` instead of `x.slice(a, b)`, `x in s` is already native) but the structure is identical: each construct has a Dafny lowering and a Lean lowering, dispatched by semantic name. SPEC section 6 (type mapping) is also directly portable, with Python's `int`, `bool`, `str`, `list[T]`, `dict[K, V]`, `set[T]`, `T | None` mapping to the same backend types as TS's `number`, `boolean`, `string`, `T[]`, `Map<K, V>`, `Set<T>`, `T | undefined`.
-
-The phase files in the LemmaScript subdirectory (https://github.com/midspiral/LemmaScript/tree/main/LemmaScript) are the implementation reference. extract.ts is the ts-morph to Raw IR translator (VeriPy equivalent: ast to py dialect ingestor). resolve.ts attaches types, classifies call purity via call-graph analysis, rejects unsupported patterns (VeriPy: an xDSL pass over the py dialect, lowering to verif dialect). narrow.ts handles optional and discriminated-union narrowing (VeriPy: a separate xDSL pass producing match_some / tag_match ops). transform.ts is the backend-neutral lowering, doing for-of desugar, ANF lifting, match generation. lean-emit.ts and dafny-emit.ts are the printers. types.ts is the type mapping logic. ARCHITECTURE_NARROWING.md (https://github.com/midspiral/LemmaScript/blob/main/ARCHITECTURE_NARROWING.md) explains why narrow is split out from resolve and transform, a distinction worth preserving in the dialect design.
-
-The two-file Dafny workflow (.dfy.gen regeneratable, .dfy editable, additions-only diff) and four-file Lean workflow (.types.lean + .def.lean regenerated, .spec.lean + .proof.lean user-owned) are documented in SPEC_DAFNY.md (https://github.com/midspiral/LemmaScript/blob/main/SPEC_DAFNY.md) and SPEC_LEAN.md (https://github.com/midspiral/LemmaScript/blob/main/SPEC_LEAN.md). VeriPy should imitate exactly: the additions-only invariant is what makes the LLM proof loop tractable, since the LLM cannot accidentally rewrite the spec. TOOLS.md (https://github.com/midspiral/LemmaScript/blob/main/TOOLS.md) lists the peephole and narrow rules; the peephole pass takes a `backend` parameter because some rewrites are Dafny-only (boolean short-circuit collapsing breaks Lean's structural-termination checker, see SPEC section 3.9).
-
-For end-to-end examples to mimic, SPEC section 6.6 contains a complete state-machine example with the TS source, the expected Dafny output, and the loop invariant that closes the proof. The internal examples directory (https://github.com/midspiral/LemmaScript/tree/main/examples) has more. The brownfield case studies (hono CVEs, casbin ACLs, xyflow geometry, charmchat topological sort) are linked from the LemmaScript README and show the kind of code the design ultimately needs to handle. VeriPy will not approach that scale for a long time, but the case studies are useful for understanding what proof additions look like in practice.
+    foo.py  -->  py dialect  -->  verif dialect  -->  Dafny / Lean
+              (ingest)        (resolve pass)       (printer)
 
 
 References
 ----------
 
-- LemmaScript repo: https://github.com/midspiral/LemmaScript
-- SPEC.md (full implementation spec, 1148 lines, with all translation tables): https://github.com/midspiral/LemmaScript/blob/main/SPEC.md
-- DESIGN.md (rationale, why no new language, why two backends): https://github.com/midspiral/LemmaScript/blob/main/DESIGN.md
-- SPEC_DAFNY.md (Dafny workflow, .dfy.gen + .dfy + three-way merge): https://github.com/midspiral/LemmaScript/blob/main/SPEC_DAFNY.md
-- SPEC_LEAN.md (four-file scheme, Velvet/Loom integration): https://github.com/midspiral/LemmaScript/blob/main/SPEC_LEAN.md
-- TOOLS.md (peephole and narrow rule lists): https://github.com/midspiral/LemmaScript/blob/main/TOOLS.md
-- ARCHITECTURE_NARROWING.md (resolve/narrow/transform split rationale): https://github.com/midspiral/LemmaScript/blob/main/ARCHITECTURE_NARROWING.md
-- Implementation source: https://github.com/midspiral/LemmaScript/tree/main/LemmaScript
-- Internal examples: https://github.com/midspiral/LemmaScript/tree/main/examples
-- Velvet (Lean library, Nada Amin's lemma branch): https://github.com/namin/velvet/tree/lemma
-- Loom (Lean library, Nada Amin's lemma branch): https://github.com/namin/loom/tree/lemma
-- Lemmafit (sibling project, agent-driven verified code generation with Dafny): https://github.com/midspiral/lemmafit
+- LemmaScript: https://github.com/midspiral/LemmaScript
+- SPEC.md (annotation grammar, translation tables): https://github.com/midspiral/LemmaScript/blob/main/SPEC.md
 - xDSL: https://github.com/xdslproject/xdsl
 - Dafny: https://github.com/dafny-lang/dafny
 - Lean 4: https://github.com/leanprover/lean4
@@ -91,4 +44,5 @@ References
 Credit
 ------
 
-The vericoding pattern, the #@ annotation idea, and the proof-additions-with-additions-only-diff workflow all come from LemmaScript by Nada Amin (https://github.com/midspiral/LemmaScript). Velvet and Loom on the Lean side also hers.
+The vericoding pattern, the #@ annotation idea, and the proof-additions-only
+workflow all come from LemmaScript by Nada Amin.
