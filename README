@@ -28,4 +28,4 @@ Based off LemmaScript by Nada Amin.
 - SPEC.md (annotation grammar, translation tables): https://github.com/midspiral/LemmaScript/blob/main/SPEC.md
 - xDSL: https://github.com/xdslproject/xdsl
 - Dafny: https://github.com/dafny-lang/dafny
-- Strata (Python → SMT via Lean 4): https://github.com/strata-org/Strata
+- Strata (Python -> SMT via Lean 4): https://github.com/strata-org/Strata
