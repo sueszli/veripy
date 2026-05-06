@@ -691,7 +691,7 @@ class VeriPyMain(xDSLOptMain):
             if module is None:
                 continue
             dfy = print_dafny(module)
-            result = subprocess.run(["docker", "run", "--rm", "-i", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"], input=dfy + "\n", capture_output=True, text=True)
+            result = subprocess.run(["docker", "run", "--rm", "-i", "--platform", "linux/amd64", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"], input=dfy + "\n", capture_output=True, text=True)
             if result.stdout:
                 print(result.stdout)
             if result.stderr:
