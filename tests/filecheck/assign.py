@@ -1,4 +1,4 @@
-# RUN: veripy %s -t dfy | filecheck %s
+# RUN: veripy %s | filecheck %s
 
 def simple(x: int) -> int:
     y = x + 1

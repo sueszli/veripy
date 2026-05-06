@@ -1,4 +1,4 @@
-# RUN: veripy %s -t dfy | filecheck %s
+# RUN: veripy %s | filecheck %s
 
 def eq(a: int, b: int) -> int:
     if a == b:

@@ -1,4 +1,4 @@
-# RUN: veripy %s -t dfy | filecheck %s
+# RUN: veripy %s | filecheck %s
 def abs(x: int) -> int:
     #@ ensures result >= 0
     #@ ensures result == x or result == -x
