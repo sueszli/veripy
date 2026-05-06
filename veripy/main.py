@@ -429,20 +429,15 @@ class DafnyPrinter(BasePrinter):
 @click.option("--verify", is_flag=True, help="Compile to Dafny and verify via Docker")
 def cli(input, verify):
     source = sys.stdin.read() if input == "-" else open(input).read()
-    module = ingest(source, input if input != "-" else None)
-
     buf = StringIO()
-    DafnyPrinter(buf).print_module(module)
+    DafnyPrinter(buf).print_module(ingest(source, None if input == "-" else input))
     dfy = buf.getvalue()
 
     if not verify:
         print(dfy)
         return
 
-    result = subprocess.run(
-        ["docker", "run", "--rm", "-i", "--platform", "linux/amd64", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"],
-        input=dfy + "\n", capture_output=True, text=True
-    )
+    result = subprocess.run(["docker", "run", "--rm", "-i", "--platform", "linux/amd64", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"], input=dfy + "\n", capture_output=True, text=True)
     if result.stdout:
         print(result.stdout)
     if result.stderr:
