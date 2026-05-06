@@ -17,26 +17,7 @@ from xdsl.utils.base_printer import BasePrinter
 from xdsl.utils.target import Target
 from xdsl.xdsl_opt_main import xDSLOptMain
 
-from veripy.ops_py import (
-    AssertOp,
-    AssignOp,
-    BinOp,
-    CallOp,
-    ConstantOp,
-    DecreasesOp,
-    EnsuresOp,
-    FuncOp,
-    IfOp,
-    InvariantOp,
-    NegOp,
-    ParamRefOp,
-    Py,
-    RequiresOp,
-    ReturnOp,
-    VarRefOp,
-    WhileOp,
-    YieldOp,
-)
+from veripy.ops_py import AssertOp, AssignOp, BinOp, CallOp, ConstantOp, DecreasesOp, EnsuresOp, FuncOp, IfOp, InvariantOp, NegOp, ParamRefOp, Py, RequiresOp, ReturnOp, VarRefOp, WhileOp, YieldOp
 
 #
 # ingestor
@@ -47,21 +28,7 @@ i1 = IntegerType(1)
 
 ANNOTATION_RE = re_compile(r"^\s*#@\s+(requires|ensures|invariant|decreases)\s+(.*?)\s*$")
 
-AST_OP: dict[type, tuple[str, IntegerType]] = {
-    ast.Eq: ("eq", i1),
-    ast.NotEq: ("ne", i1),
-    ast.Lt: ("lt", i1),
-    ast.LtE: ("le", i1),
-    ast.Gt: ("gt", i1),
-    ast.GtE: ("ge", i1),
-    ast.Add: ("add", i64),
-    ast.Sub: ("sub", i64),
-    ast.Mult: ("mul", i64),
-    ast.FloorDiv: ("floordiv", i64),
-    ast.Mod: ("mod", i64),
-    ast.And: ("and", i1),
-    ast.Or: ("or", i1),
-}
+AST_OP: dict[type, tuple[str, IntegerType]] = {ast.Eq: ("eq", i1), ast.NotEq: ("ne", i1), ast.Lt: ("lt", i1), ast.LtE: ("le", i1), ast.Gt: ("gt", i1), ast.GtE: ("ge", i1), ast.Add: ("add", i64), ast.Sub: ("sub", i64), ast.Mult: ("mul", i64), ast.FloorDiv: ("floordiv", i64), ast.Mod: ("mod", i64), ast.And: ("and", i1), ast.Or: ("or", i1)}
 
 
 def _resolve_type(ann: ast.expr | None) -> IntegerType:
@@ -323,21 +290,7 @@ class DfyExpr:
     prec: int
 
 
-BINOP_INFO: dict[str, tuple[str, int]] = {
-    "or": ("||", PREC_OR),
-    "and": ("&&", PREC_AND),
-    "eq": ("==", PREC_EQ),
-    "ne": ("!=", PREC_EQ),
-    "lt": ("<", PREC_CMP),
-    "le": ("<=", PREC_CMP),
-    "gt": (">", PREC_CMP),
-    "ge": (">=", PREC_CMP),
-    "add": ("+", PREC_ADD),
-    "sub": ("-", PREC_ADD),
-    "mul": ("*", PREC_MUL),
-    "floordiv": ("/", PREC_MUL),
-    "mod": ("%", PREC_MUL),
-}
+BINOP_INFO: dict[str, tuple[str, int]] = {"or": ("||", PREC_OR), "and": ("&&", PREC_AND), "eq": ("==", PREC_EQ), "ne": ("!=", PREC_EQ), "lt": ("<", PREC_CMP), "le": ("<=", PREC_CMP), "gt": (">", PREC_CMP), "ge": (">=", PREC_CMP), "add": ("+", PREC_ADD), "sub": ("-", PREC_ADD), "mul": ("*", PREC_MUL), "floordiv": ("/", PREC_MUL), "mod": ("%", PREC_MUL)}
 
 
 class DafnyPrinter(BasePrinter):
