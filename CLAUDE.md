@@ -62,7 +62,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 These guidelines are working if: fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-# Syntax Guidelines
+# Code Guidelines
 
 - minimize indentation: guard first programming, early returns, happy path first
 - maximize for code locality: a little duplication is okay. inline small functions (<5 LoC)
@@ -70,3 +70,4 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 
 - avoid OOP primitives like classes and inheritance where possible
 - use match statements over multiple `isinstance` branches
+- no trailing commas. no line length limit - prefer single-line imports, dicts and lists over multi-line with trailing commas
