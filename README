@@ -20,8 +20,8 @@ Example
             return x
         return -x
 
-    $ veripy example/example.py
-    $ veripy example/example.py --verify
+    $ veripy example/abs.py
+    $ veripy example/abs.py --verify
 
 
 Pipeline
