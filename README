@@ -1,13 +1,8 @@
 VeriPy
 ======
 
-xDSL-based vericoding toolchain for Python. Annotate Python with #@ specs,
-lower through typed IR to Dafny (or Lean 4), verify, and let an LLM close
-whatever the solver can't.
-
-The vericoding pattern and annotation design come from LemmaScript
-(https://github.com/midspiral/LemmaScript) which targets TypeScript.
-VeriPy applies it to Python with a multi-dialect xDSL IR.
+A toy experiment in formal verification for Python.
+Annotate with `#@` specs, lower to Dafny, and verify.
 
 
 Example
@@ -20,29 +15,16 @@ Example
             return x
         return -x
 
-    $ uv run veripy example/abs.py
     $ uv run veripy example/abs.py --verify
-
-
-Pipeline
---------
-
-    foo.py  -->  py dialect  -->  verif dialect  -->  Dafny / Lean
-              (ingest)        (resolve pass)       (printer)
+    > Dafny program verifier finished with 1 verified, 0 errors
 
 
 References
 ----------
 
+Based off LemmaScript by Nada Amin.
+
 - LemmaScript: https://github.com/midspiral/LemmaScript
 - SPEC.md (annotation grammar, translation tables): https://github.com/midspiral/LemmaScript/blob/main/SPEC.md
 - xDSL: https://github.com/xdslproject/xdsl
 - Dafny: https://github.com/dafny-lang/dafny
-- Lean 4: https://github.com/leanprover/lean4
-
-
-Credit
-------
-
-The vericoding pattern, the #@ annotation idea, and the proof-additions-only
-workflow all come from LemmaScript by Nada Amin.
