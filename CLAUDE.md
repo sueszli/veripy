@@ -65,7 +65,7 @@ These guidelines are working if: fewer unnecessary changes in diffs, fewer rewri
 # Code Guidelines
 
 - minimize indentation: guard first programming, early returns, happy path first
-- maximize for code locality: a little duplication is okay. inline small functions (<5 LoC)
+- maximize for code locality: a little duplication is okay. inline small functions (<5 LoC). no module-level globals or top-level helpers unless reused in multiple places
 - maximize test coverage, without adding noise. prefer LIT tests over pytests
 
 - avoid OOP primitives like classes and inheritance where possible
