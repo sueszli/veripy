@@ -1,4 +1,3 @@
-import argparse
 import ast
 import subprocess
 import sys
@@ -8,35 +7,14 @@ from io import StringIO
 from re import compile as re_compile
 from typing import IO
 
-from xdsl.context import Context
 from xdsl.dialects.builtin import IntegerType, ModuleOp
 from xdsl.frontend.pyast.utils.exceptions import CodeGenerationException
 from xdsl.frontend.pyast.utils.op_inserter import OpInserter
 from xdsl.ir import Block, Operation, Region, SSAValue
+import click
 from xdsl.utils.base_printer import BasePrinter
-from xdsl.utils.target import Target
-from xdsl.xdsl_opt_main import xDSLOptMain
 
-from veripy.ops_py import (
-    AssertOp,
-    AssignOp,
-    BinOp,
-    CallOp,
-    ConstantOp,
-    DecreasesOp,
-    EnsuresOp,
-    FuncOp,
-    IfOp,
-    InvariantOp,
-    NegOp,
-    ParamRefOp,
-    Py,
-    RequiresOp,
-    ReturnOp,
-    VarRefOp,
-    WhileOp,
-    YieldOp,
-)
+from veripy.ops_py import AssertOp, AssignOp, BinOp, CallOp, ConstantOp, DecreasesOp, EnsuresOp, FuncOp, IfOp, InvariantOp, NegOp, ParamRefOp, RequiresOp, ReturnOp, VarRefOp, WhileOp, YieldOp
 
 #
 # ingestor
@@ -473,73 +451,32 @@ class DafnyPrinter(BasePrinter):
                 self._emit_stmt(op)
 
 
-def print_dafny(module: ModuleOp) -> str:
-    output = StringIO()
-    DafnyPrinter(output).print_module(module)
-    return output.getvalue()
-
-
-#
-# targets
-#
-
-
-@dataclass(frozen=True)
-class DafnyTarget(Target):
-    name = "dfy"
-
-    def emit(self, ctx: Context, module: ModuleOp, output: IO[str]) -> None:
-        DafnyPrinter(output).print_module(module)
-        output.write("\n")
-
-
 #
 # cli
 #
 
 
-class VeriPyMain(xDSLOptMain):
-    def register_all_dialects(self):
-        self.ctx.register_dialect("py", lambda: Py)
+@click.command()
+@click.argument("input", default="-")
+@click.option("--verify", is_flag=True, help="Compile to Dafny and verify via Docker")
+def cli(input, verify):
+    source = sys.stdin.read() if input == "-" else open(input).read()
+    module = ingest(source, input if input != "-" else None)
 
-    def register_all_frontends(self):
-        super().register_all_frontends()
+    buf = StringIO()
+    DafnyPrinter(buf).print_module(module)
+    dfy = buf.getvalue()
 
-        def parse_python(io: IO[str]):
-            return ingest(io.read(), self.get_input_name())
+    if not verify:
+        print(dfy)
+        return
 
-        self.available_frontends["py"] = parse_python
-
-    def register_all_targets(self):
-        super().register_all_targets()
-        self.available_targets["dfy"] = lambda: DafnyTarget
-
-    def register_all_arguments(self, arg_parser: argparse.ArgumentParser):
-        super().register_all_arguments(arg_parser)
-        arg_parser.set_defaults(target="dfy")
-        arg_parser.add_argument("--verify", default=False, action="store_true", help="Compile to Dafny and verify via Docker")
-
-    def apply_passes(self, prog: ModuleOp) -> bool:
-        self.pipeline.apply(self.ctx, prog)
-        return True
-
-    def run(self):
-        if not self.args.verify:
-            super().run()
-            return
-        chunks, ext = self.prepare_input()
-        for chunk, offset in chunks:
-            module = self.parse_chunk(chunk, ext, offset)
-            if module is None:
-                continue
-            dfy = print_dafny(module)
-            result = subprocess.run(["docker", "run", "--rm", "-i", "--platform", "linux/amd64", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"], input=dfy + "\n", capture_output=True, text=True)
-            if result.stdout:
-                print(result.stdout)
-            if result.stderr:
-                print(result.stderr, file=sys.stderr)
-            sys.exit(result.returncode)
-
-
-def cli():
-    VeriPyMain(description="VeriPy: Python to Dafny verification compiler").run()
+    result = subprocess.run(
+        ["docker", "run", "--rm", "-i", "--platform", "linux/amd64", "xtrm0/dafny:4.9.1", "sh", "-c", "cat > /tmp/out.dfy && dafny verify /tmp/out.dfy"],
+        input=dfy + "\n", capture_output=True, text=True
+    )
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+    sys.exit(result.returncode)
