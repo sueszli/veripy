@@ -5,8 +5,10 @@ A toy experiment in formal verification for Python.
 Annotate with `#@` specs, lower to Dafny, and verify.
 
 
-Example
--------
+Usage
+-----
+
+$ cat example/abs.py
 
     def abs(x: int) -> int:
         #@ ensures result >= 0
@@ -15,8 +17,9 @@ Example
             return x
         return -x
 
-    $ uv run veripy example/abs.py --verify
-    > Dafny program verifier finished with 1 verified, 0 errors
+$ uv run veripy example/abs.py --verify
+    
+    Dafny program verifier finished with 1 verified, 0 errors
 
 
 References
