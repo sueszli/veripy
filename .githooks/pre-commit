@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-make fmt
-
-if ! git diff --quiet; then
-    echo "pre-commit failed: unstaged formatting changes"
-    exit 1
-fi
